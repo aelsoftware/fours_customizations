@@ -146,22 +146,3 @@ def _unlink_so_items(doc):
 
 	if not so_names:
 		return
-
-	# Clear any SO item rows that reference this DN
-	so_items = frappe.get_all(
-		"Sales Order Item",
-		filters={
-			"parent": ["in", list(so_names)],
-			"delivery_note": doc.name,
-		},
-		pluck="name",
-	)
-
-	for so_item_name in so_items:
-		frappe.db.set_value(
-			"Sales Order Item",
-			so_item_name,
-			"delivery_note",
-			None,
-			update_modified=False,
-		)
