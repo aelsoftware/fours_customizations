@@ -77,15 +77,27 @@ def on_submit(doc, method=None):
 
 
 def before_cancel(doc, method=None):
-	"""Allow SI cancellation even when commission JEs link back to it."""
-	if not _is_automation_enabled(doc.company):
-		return
+	"""Clear all back-references on this SI and suppress link validation
+	before ERPNext's validator runs."""
+	# Clear SO/DN links on SI item rows so the validator does not find
+	# SI → SO or SI → DN connections that would block the cancel.
+	for item in doc.items:
+		frappe.db.set_value(
+			"Sales Invoice Item",
+			item.name,
+			{
+				"sales_order": None,
+				"so_detail": None,
+				"dn_detail": None,
+				"delivery_note": None,
+			},
+			update_modified=False,
+		)
 
-	if frappe.db.exists("Journal Entry", {
-		"custom_commission_sales_invoice": doc.name,
-		"docstatus": 1,
-	}):
-		doc.flags.ignore_links = True
+	# Always suppress link validation — we have cleared the item-level links
+	# above, but the validator also checks reverse references (JEs, DN items,
+	# etc.) that cannot all be cleared without amending submitted documents.
+	doc.flags.ignore_links = True
 
 
 def on_cancel(doc, method=None):
