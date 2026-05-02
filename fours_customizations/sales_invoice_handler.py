@@ -16,21 +16,15 @@ def before_submit(doc, method=None):
  
  
 def before_insert(doc, method=None):
-        """Clear all SO/DN back-references on SI item rows before insert since the
-        SO/DN may be cancelled later and we want to allow the links to be cleared
-        on_cancel."""
-        for item in doc.items:
-                frappe.db.set_value(
-                        "Sales Invoice Item",
-                        item.name,
-                        {
-                                "sales_order": None,
-                                "so_detail": None,
-                                "dn_detail": None,
-                                "delivery_note": None,
-                        },
-                        update_modified=False,
-                )
+    # Only for amended docs
+    if not doc.amended_from:
+        return
+
+    for item in doc.items:
+        item.sales_order = None
+        item.so_detail = None
+        item.delivery_note = None
+        item.dn_detail = None
 
 
 def before_save(doc, method=None):
@@ -46,19 +40,7 @@ def before_save(doc, method=None):
 			doc.set_warehouse = "Main Store - 4S"
 			for item in doc.items:
 				item.warehouse = "Main Store - 4S"
-    
-	for item in doc.items:
-		frappe.db.set_value(
-			"Sales Invoice Item",
-			item.name,
-			{
-				"sales_order": None,
-				"so_detail": None,
-				"dn_detail": None,
-				"delivery_note": None,
-			},
-			update_modified=False,
-		)
+
 
 	doc.update_outstanding_for_self = 0
 	if doc.is_return or doc.return_against:
