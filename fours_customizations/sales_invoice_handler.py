@@ -16,15 +16,14 @@ def before_submit(doc, method=None):
  
  
 def before_insert(doc, method=None):
-    # Only for amended docs
     if not doc.amended_from:
         return
+
+    doc.flags.ignore_links = True  # VERY IMPORTANT
 
     for item in doc.items:
         item.sales_order = None
         item.so_detail = None
-        item.delivery_note = None
-        item.dn_detail = None
 
 
 def before_save(doc, method=None):
