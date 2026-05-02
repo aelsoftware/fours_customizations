@@ -78,7 +78,8 @@ def on_submit(doc, method=None):
 
 def before_cancel(doc, method=None):
 	doc.flags.ignore_links = True
-    
+	doc.flags.ignore_validate = True
+
 	"""Clear all back-references on this SI and suppress link validation
 	before ERPNext's validator runs."""
 	# Clear SO/DN links on SI item rows so the validator does not find
@@ -535,7 +536,7 @@ def _create_draft_delivery_note(doc, sales_order=None):
 					si_item.name,
 					{
 						"dn_detail": dn_item_name,
-						"delivery_note": dn.name,
+						# "delivery_note": dn.name,
 					},
 					update_modified=False,
 				)
