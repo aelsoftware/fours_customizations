@@ -40,10 +40,6 @@ def on_trash(doc, method=None):
 		if not frappe.db.get_value("Company", si.company, "enable_selling_automations"):
 			continue
 
-		# Clear the back-link before cancelling so ERPNext's link validation
-		# on the SO side does not block the SI cancel.
-		frappe.db.set_value("Sales Invoice", si_name, "custom_sales_invoice", None, update_modified=False)
-
 		si.flags.ignore_permissions = True
 		si.flags.ignore_links = True
 		si.cancel()
