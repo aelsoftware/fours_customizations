@@ -2,19 +2,32 @@ import frappe
 
 
 def before_cancel(doc, method=None):
-	"""Clear all back-references to this SO and suppress link validation
-	before ERPNext's validator runs."""
-	_cancel_stock_reservations(doc)
-	_unlink_si_items(doc)
-	_unlink_dn_items(doc)
-	frappe.db.set_value(
+    
+    """When a Sales Order is cancelled, clear the custom_sales_invoice back-link."""
+    if not doc.custom_sales_invoice:
+        return
+
+    frappe.db.set_value(
 		"Sales Order",
 		doc.name,
 		"custom_sales_invoice",
 		None,
 		update_modified=False,
 	)
-	doc.flags.ignore_links = True
+ 
+    """Clear all back-references to this SO and suppress link validation
+	before ERPNext's validator runs."""
+    _cancel_stock_reservations(doc)
+    _unlink_si_items(doc)
+    _unlink_dn_items(doc)
+    frappe.db.set_value(
+		"Sales Order",
+		doc.name,
+		"custom_sales_invoice",
+		None,
+		update_modified=False,
+	)
+    doc.flags.ignore_links = True
 
 
 def on_cancel(doc, method=None):
