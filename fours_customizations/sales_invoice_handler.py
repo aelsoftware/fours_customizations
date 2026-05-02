@@ -28,6 +28,19 @@ def before_save(doc, method=None):
 			doc.set_warehouse = "Main Store - 4S"
 			for item in doc.items:
 				item.warehouse = "Main Store - 4S"
+    
+	for item in doc.items:
+		frappe.db.set_value(
+			"Sales Invoice Item",
+			item.name,
+			{
+				"sales_order": None,
+				"so_detail": None,
+				"dn_detail": None,
+				"delivery_note": None,
+			},
+			update_modified=False,
+		)
 
 	doc.update_outstanding_for_self = 0
 	if doc.is_return or doc.return_against:
