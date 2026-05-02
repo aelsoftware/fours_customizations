@@ -197,6 +197,22 @@ def _create_sales_order_from_invoice(doc):
 	so.insert()
 	so.submit()
 
+	# Mark every SO item as fully billed since the SI is already submitted.
+	# ERPNext normally does this via update_billed_amount_in_so when an SI is
+	# submitted against an existing SO, but here the SO is created after the fact
+	# so we set billed_amt = base_amount (qty × base_rate) directly.
+	for so_item in so.items:
+		for si_item in eligible_items:
+			if si_item.item_code == so_item.item_code:
+				frappe.db.set_value(
+					"Sales Order Item",
+					so_item.name,
+					"billed_amt",
+					flt(so_item.qty) * flt(so_item.base_rate),
+					update_modified=False,
+				)
+				break
+
 	# Back-link SI items → SO + SO item for DN linkage
 	for so_item in so.items:
 		for si_item in eligible_items:
