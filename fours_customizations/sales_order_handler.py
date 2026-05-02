@@ -31,11 +31,13 @@ def before_cancel(doc, method=None):
 
 
 def on_cancel(doc, method=None):
-	"""When a Sales Order is cancelled, clear the custom_sales_invoice back-link."""
-	if not doc.custom_sales_invoice:
-		return
+    if doc.docstatus != 1:
+        return
+    """When a Sales Order is cancelled, clear the custom_sales_invoice back-link."""
+    if not doc.custom_sales_invoice:
+        return
 
-	frappe.db.set_value(
+    frappe.db.set_value(
 		"Sales Order",
 		doc.name,
 		"custom_sales_invoice",
