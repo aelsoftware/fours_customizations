@@ -2,6 +2,9 @@ import frappe
 
 
 def before_cancel(doc, method=None):
+    
+	doc.flags.ignore_links = True
+	doc.flags.ignore_validate = True
 	"""Unlink all back-references and suppress link validation on cancel."""
 	_unlink_si_items(doc)
 	_unlink_so_items(doc)
