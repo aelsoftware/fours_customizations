@@ -492,6 +492,25 @@ def _create_draft_delivery_note(doc, sales_order=None):
 					dn_item.against_sales_order = sales_order
 
 		dn.insert(ignore_permissions=True)
+
+		# Write dn_detail back onto each SI item row so that:
+		#  - delivered_qty is calculated correctly
+		#  - the duplicate-DN guard (dn_detail check above) works on re-runs
+		#  - the DN link is visible in the SI item table
+		si_detail_to_dn_item = {dn_item.si_detail: dn_item.name for dn_item in dn.items}
+		for si_item in doc.items:
+			dn_item_name = si_detail_to_dn_item.get(si_item.name)
+			if dn_item_name:
+				frappe.db.set_value(
+					"Sales Invoice Item",
+					si_item.name,
+					{
+						"dn_detail": dn_item_name,
+						"delivery_note": dn.name,
+					},
+					update_modified=False,
+				)
+
 		frappe.msgprint(f"Draft Delivery Note {dn.name} created.", alert=True)
 
 
