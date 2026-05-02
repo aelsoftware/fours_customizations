@@ -13,6 +13,24 @@ def _is_automation_enabled(company):
 
 def before_submit(doc, method=None):
 	doc.update_outstanding_for_self = 0
+ 
+ 
+def before_insert(doc, method=None):
+        """Clear all SO/DN back-references on SI item rows before insert since the
+        SO/DN may be cancelled later and we want to allow the links to be cleared
+        on_cancel."""
+        for item in doc.items:
+                frappe.db.set_value(
+                        "Sales Invoice Item",
+                        item.name,
+                        {
+                                "sales_order": None,
+                                "so_detail": None,
+                                "dn_detail": None,
+                                "delivery_note": None,
+                        },
+                        update_modified=False,
+                )
 
 
 def before_save(doc, method=None):
