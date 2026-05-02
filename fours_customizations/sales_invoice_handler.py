@@ -25,6 +25,7 @@ def before_insert(doc, method=None):
     for item in doc.items:
         item.sales_order = None
         item.so_detail = None
+    doc.set("__onload", {})
         
 def validate(doc, method=None):
     if not doc.amended_from:
@@ -36,6 +37,7 @@ def validate(doc, method=None):
     for item in doc.items:
         item.sales_order = None
         item.so_detail = None
+    doc.set("__onload", {})
 
 
 def before_save(doc, method=None):
@@ -61,6 +63,7 @@ def before_save(doc, method=None):
 	for item in doc.items:
 		item.sales_order = None
 		item.so_detail = None
+	doc.set("__onload", {})
   
 	if doc.is_return or doc.return_against:
 		dn_parents = frappe.get_all(
