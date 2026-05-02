@@ -1,0 +1,55 @@
+{
+ "app": "fours_customizations",
+ "creation": "2026-02-18 23:57:28.242561",
+ "docstatus": 0,
+ "doctype": "Workspace Sidebar",
+ "for_user": "mukiibikeren9@gmail.com",
+ "header_icon": "warehouse",
+ "idx": 3,
+ "items": [
+  {
+   "child": 0,
+   "collapsible": 1,
+   "icon": "home",
+   "indent": 0,
+   "keep_closed": 0,
+   "label": "Home",
+   "link_to": "Store Keeping",
+   "link_type": "Workspace",
+   "show_arrow": 0,
+   "type": "Link"
+  },
+  {
+   "child": 0,
+   "collapsible": 1,
+   "icon": "newspaper",
+   "indent": 0,
+   "keep_closed": 0,
+   "label": "Delivery Notes",
+   "link_to": "Delivery Note",
+   "link_type": "DocType",
+   "show_arrow": 0,
+   "type": "Link"
+  },
+  {
+   "child": 0,
+   "collapsible": 1,
+   "icon": "notepad-text-dashed",
+   "indent": 0,
+   "keep_closed": 0,
+   "label": "Stock Ledger V2",
+   "link_to": "Stock Ledger V2",
+   "link_type": "Report",
+   "show_arrow": 0,
+   "type": "Link",
+   "url": "https://multax.kit.africa/desk/query-report/Stock Ledger V2"
+  }
+ ],
+ "modified": "2026-02-19 09:55:57.893679",
+ "modified_by": "mukiibikeren9@gmail.com",
+ "module": "Stock",
+ "name": "Store Keeping",
+ "owner": "mukiibikeren9@gmail.com",
+ "standard": 1,
+ "title": "Store Keeping"
+}

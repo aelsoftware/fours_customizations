@@ -1,0 +1,22 @@
+{
+ "app": "fours_customizations",
+ "bg_color": "blue",
+ "creation": "2026-02-18 22:26:06.833813",
+ "docstatus": 0,
+ "doctype": "Desktop Icon",
+ "hidden": 0,
+ "icon_image": "/files/control-enter.svg",
+ "icon_type": "Link",
+ "idx": 0,
+ "label": "Control Center",
+ "link_to": "Control Center",
+ "link_type": "Workspace Sidebar",
+ "modified": "2026-02-18 22:26:22.457431",
+ "modified_by": "Administrator",
+ "name": "Control Center",
+ "owner": "Administrator",
+ "restrict_removal": 0,
+ "roles": [],
+ "sidebar": "Control Center",
+ "standard": 1
+}

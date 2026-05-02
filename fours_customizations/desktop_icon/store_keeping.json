@@ -1,0 +1,23 @@
+{
+ "app": "fours_customizations",
+ "bg_color": "blue",
+ "creation": "2026-02-19 01:42:14.363856",
+ "docstatus": 0,
+ "doctype": "Desktop Icon",
+ "hidden": 0,
+ "icon_image": "/files/store-keeper.svg",
+ "icon_type": "Link",
+ "idx": 0,
+ "label": "Store Keeping",
+ "link_to": "Store Keeping",
+ "link_type": "Workspace Sidebar",
+ "logo_url": " /files/store-keeper.svg",
+ "modified": "2026-02-19 02:02:28.690431",
+ "modified_by": "mukiibikeren9@gmail.com",
+ "name": "Store Keeping",
+ "owner": "mukiibikeren9@gmail.com",
+ "restrict_removal": 0,
+ "roles": [],
+ "sidebar": "Store Keeping",
+ "standard": 1
+}
