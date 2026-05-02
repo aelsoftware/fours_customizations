@@ -27,7 +27,7 @@ def before_insert(doc, method=None):
         item.so_detail = None
     doc.set("__onload", {})
         
-def validate(doc, method=None):
+def before_validate(doc, method=None):
     if not doc.amended_from:
         return
 
