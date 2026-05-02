@@ -20,6 +20,7 @@ def before_insert(doc, method=None):
         return
 
     doc.flags.ignore_links = True  # VERY IMPORTANT
+    doc.flags.ignore_validate_links = True
 
     for item in doc.items:
         item.sales_order = None
@@ -30,6 +31,7 @@ def validate(doc, method=None):
         return
 
     doc.flags.ignore_links = True
+    doc.flags.ignore_validate_links = True
 
     for item in doc.items:
         item.sales_order = None
@@ -55,6 +57,7 @@ def before_save(doc, method=None):
 	doc.update_billed_amount_in_sales_order = 1
  
 	doc.flags.ignore_links = True  # VERY IMPORTANT
+	doc.flags.ignore_validate_links = True
 	for item in doc.items:
 		item.sales_order = None
 		item.so_detail = None
