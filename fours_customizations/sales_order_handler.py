@@ -58,22 +58,6 @@ def _unlink_si_items(doc):
 	"""Clear all SO/DN back-references on SI header and item rows linked to this SO."""
 	so_item_names = [item.name for item in doc.items if item.name]
 
-	# ── SI header rows linked to this SO ─────────────────────────────────────
-	# The Sales Invoice header can carry a sales_order field; clear those too.
-	si_names_by_so = frappe.get_all(
-		"Sales Invoice",
-		filters={"sales_order": doc.name, "docstatus": ["!=", 2]},
-		pluck="name",
-	)
-	for si_name in si_names_by_so:
-		frappe.db.set_value(
-			"Sales Invoice",
-			si_name,
-			"sales_order",
-			None,
-			update_modified=False,
-		)
-
 	if not so_item_names:
 		return
 
