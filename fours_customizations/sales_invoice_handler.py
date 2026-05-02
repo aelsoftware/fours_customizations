@@ -77,7 +77,7 @@ def on_submit(doc, method=None):
 
 
 def before_cancel(doc, method=None):
-	if doc.docstatus != 1:
+	if doc.docstatus == 1:
 		return
     
 	"""Clear all back-references on this SI and suppress link validation
