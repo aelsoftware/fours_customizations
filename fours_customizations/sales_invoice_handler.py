@@ -77,6 +77,9 @@ def on_submit(doc, method=None):
 
 
 def before_cancel(doc, method=None):
+	if doc.docstatus != 1:
+		return
+    
 	"""Clear all back-references on this SI and suppress link validation
 	before ERPNext's validator runs."""
 	# Clear SO/DN links on SI item rows so the validator does not find
