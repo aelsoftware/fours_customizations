@@ -106,7 +106,7 @@ def _unlink_si_items(doc):
             frappe.db.set_value(
 				"Sales Invoice Item",
 				si_item_name,
-				{"dn_detail": None, "delivery_note": None},
+				{"dn_detail": None,"sales_order":None, "so_detail": None, "delivery_note": None},
 				update_modified=False,
 			)
 
