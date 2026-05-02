@@ -16,8 +16,6 @@ def before_submit(doc, method=None):
  
  
 def before_insert(doc, method=None):
-    if not doc.amended_from:
-        return
 
     doc.flags.ignore_links = True  # VERY IMPORTANT
     doc.flags.ignore_validate_links = True
@@ -28,8 +26,6 @@ def before_insert(doc, method=None):
     doc.set("__onload", {})
         
 def before_validate(doc, method=None):
-    if not doc.amended_from:
-        return
 
     doc.flags.ignore_links = True
     doc.flags.ignore_validate_links = True
