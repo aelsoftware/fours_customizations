@@ -55,6 +55,9 @@ def _cancel_stock_reservations(doc):
 
 
 def _unlink_si_items(doc):
+	if doc.docstatus != 1:
+		return
+
 	"""Clear all SO/DN back-references on SI header and item rows linked to this SO."""
 	so_item_names = [item.name for item in doc.items if item.name]
 
@@ -101,6 +104,9 @@ def _unlink_si_items(doc):
 
 
 def _unlink_dn_items(doc):
+	if doc.docstatus != 1:
+		return
+
 	"""Clear against_sales_order and so_detail on DN item rows linked to this SO,
 	and clear the SI↔DN links on any SI items those DN items point to."""
 	so_item_names = [item.name for item in doc.items if item.name]
