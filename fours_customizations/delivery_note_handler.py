@@ -6,6 +6,10 @@ def on_trash(doc, method=None):
 	sales_invoices = _get_linked_sales_invoices(doc)
 	sales_orders = _get_linked_sales_orders(doc)
 
+	# Clear dn_detail and delivery_note on all SI item rows that point to this DN
+	# so ERPNext's link validation doesn't block the delete.
+	_unlink_si_items(doc)
+
 	for si_name in sales_invoices:
 		si = frappe.get_doc("Sales Invoice", si_name)
 
@@ -51,3 +55,29 @@ def _get_linked_sales_orders(doc):
 		if item.against_sales_order:
 			orders.add(item.against_sales_order)
 	return orders
+
+
+def _unlink_si_items(doc):
+	"""Clear dn_detail and delivery_note on SI item rows that point to this DN,
+	so ERPNext's link validation does not block the DN deletion."""
+	dn_item_names = [item.name for item in doc.items if item.name]
+	if not dn_item_names:
+		return
+
+	# Find SI items whose dn_detail points to one of this DN's item rows
+	si_items = frappe.get_all(
+		"Sales Invoice Item",
+		filters={"dn_detail": ["in", dn_item_names]},
+		pluck="name",
+	)
+
+	for si_item_name in si_items:
+		frappe.db.set_value(
+			"Sales Invoice Item",
+			si_item_name,
+			{
+				"dn_detail": None,
+				"delivery_note": None,
+			},
+			update_modified=False,
+		)
