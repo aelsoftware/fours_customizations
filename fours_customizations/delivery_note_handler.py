@@ -6,19 +6,7 @@ def on_trash(doc, method=None):
 	sales_invoices = _get_linked_sales_invoices(doc)
 	sales_orders = _get_linked_sales_orders(doc)
 
-	for si_name in sales_invoices:
-		si = frappe.get_doc("Sales Invoice", si_name)
-
-		if si.docstatus != 1:
-			continue
-
-		if not frappe.db.get_value("Company", si.company, "enable_selling_automations"):
-			continue
-
-		si.cancel()
-		frappe.msgprint(f"Cancelled Sales Invoice {si_name}.", alert=True)
-  
-  	# Cancel SOs first — before the SI cancel touches SO status
+	# Cancel SOs first — before the SI cancel touches SO status
 	for so_name in sales_orders:
 		so = frappe.get_doc("Sales Order", so_name)
 
@@ -31,6 +19,20 @@ def on_trash(doc, method=None):
 		so.flags.ignore_permissions = True
 		so.cancel()
 		frappe.msgprint(f"Cancelled Sales Order {so_name}.", alert=True)
+
+	for si_name in sales_invoices:
+		si = frappe.get_doc("Sales Invoice", si_name)
+
+		if si.docstatus != 1:
+			continue
+
+		if not frappe.db.get_value("Company", si.company, "enable_selling_automations"):
+			continue
+
+		si.flags.ignore_permissions = True
+		si.flags.ignore_links = True
+		si.cancel()
+		frappe.msgprint(f"Cancelled Sales Invoice {si_name}.", alert=True)
 
 
 def _get_linked_sales_invoices(doc):
