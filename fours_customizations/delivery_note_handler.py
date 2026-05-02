@@ -85,24 +85,27 @@ def _get_linked_sales_orders(doc):
 
 
 def _unlink_si_items(doc):
-	"""Clear dn_detail and delivery_note on SI item rows pointing to this DN.
+    if doc.docstatus != 1:
+        return
+    
+    """Clear dn_detail and delivery_note on SI item rows pointing to this DN.
 
 	Two passes are needed because ERPNext checks both fields independently:
 	  - dn_detail  : the DN item row name (child row link)
 	  - delivery_note : the DN document name (header link)
 	Either one present is enough for the link validator to block the delete.
 	"""
-	dn_item_names = [item.name for item in doc.items if item.name]
+    dn_item_names = [item.name for item in doc.items if item.name]
 
 	# Pass 1: rows matched by dn_detail (DN item row name)
-	if dn_item_names:
-		si_items_by_detail = frappe.get_all(
+    if dn_item_names:
+        si_items_by_detail = frappe.get_all(
 			"Sales Invoice Item",
 			filters={"dn_detail": ["in", dn_item_names]},
 			pluck="name",
 		)
-		for si_item_name in si_items_by_detail:
-			frappe.db.set_value(
+        for si_item_name in si_items_by_detail:
+            frappe.db.set_value(
 				"Sales Invoice Item",
 				si_item_name,
 				{"dn_detail": None, "delivery_note": None},
@@ -112,13 +115,13 @@ def _unlink_si_items(doc):
 	# Pass 2: rows matched by delivery_note (DN document name) — catches any
 	# SI items that reference this DN header but whose dn_detail differs
 	# (e.g. manually linked rows, or rows from a previous partial delivery).
-	si_items_by_dn = frappe.get_all(
+    si_items_by_dn = frappe.get_all(
 		"Sales Invoice Item",
 		filters={"delivery_note": doc.name},
 		pluck="name",
 	)
-	for si_item_name in si_items_by_dn:
-		frappe.db.set_value(
+    for si_item_name in si_items_by_dn:
+        frappe.db.set_value(
 			"Sales Invoice Item",
 			si_item_name,
 			{"dn_detail": None, "delivery_note": None},
@@ -127,6 +130,9 @@ def _unlink_si_items(doc):
 
 
 def _unlink_so_items(doc):
+	if doc.docstatus != 1:
+		return
+
 	"""Clear against_sales_order and so_detail on DN item rows, and clear
 	delivery_note references on SO item rows pointing to this DN."""
 	dn_item_names = [item.name for item in doc.items if item.name]
