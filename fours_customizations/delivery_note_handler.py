@@ -1,15 +1,20 @@
 import frappe
 
 
-def on_trash(doc, method=None):
-	"""When a Delivery Note is deleted, cancel linked Sales Invoices and Sales Orders."""
-	sales_invoices = _get_linked_sales_invoices(doc)
-	sales_orders = _get_linked_sales_orders(doc)
-
-	# Unlink all back-references to this DN so ERPNext's link validation
-	# does not block the delete.
+def on_cancel(doc, method=None):
+	"""When a Delivery Note is cancelled, unlink all back-references."""
 	_unlink_si_items(doc)
 	_unlink_so_items(doc)
+
+
+def on_trash(doc, method=None):
+	"""When a Delivery Note is deleted, unlink back-references then cancel
+	linked Sales Invoices and Sales Orders."""
+	_unlink_si_items(doc)
+	_unlink_so_items(doc)
+
+	sales_invoices = _get_linked_sales_invoices(doc)
+	sales_orders = _get_linked_sales_orders(doc)
 
 	for si_name in sales_invoices:
 		si = frappe.get_doc("Sales Invoice", si_name)
@@ -19,6 +24,10 @@ def on_trash(doc, method=None):
 
 		if not frappe.db.get_value("Company", si.company, "enable_selling_automations"):
 			continue
+
+		# Clear the back-link before cancelling so ERPNext's link validation
+		# on the SO side does not block the SI cancel.
+		frappe.db.set_value("Sales Invoice", si_name, "custom_sales_invoice", None, update_modified=False)
 
 		si.flags.ignore_permissions = True
 		si.flags.ignore_links = True
@@ -33,6 +42,10 @@ def on_trash(doc, method=None):
 
 		if not frappe.db.get_value("Company", so.company, "enable_selling_automations"):
 			continue
+
+		# Clear the back-link before cancelling so no document points back
+		# to this SO during the cancel validation.
+		frappe.db.set_value("Sales Order", so_name, "custom_sales_invoice", None, update_modified=False)
 
 		so.flags.ignore_permissions = True
 		so.flags.ignore_links = True
@@ -59,25 +72,43 @@ def _get_linked_sales_orders(doc):
 
 
 def _unlink_si_items(doc):
-	"""Clear dn_detail and delivery_note on SI item rows pointing to this DN."""
-	dn_item_names = [item.name for item in doc.items if item.name]
-	if not dn_item_names:
-		return
+	"""Clear dn_detail and delivery_note on SI item rows pointing to this DN.
 
-	si_items = frappe.get_all(
+	Two passes are needed because ERPNext checks both fields independently:
+	  - dn_detail  : the DN item row name (child row link)
+	  - delivery_note : the DN document name (header link)
+	Either one present is enough for the link validator to block the delete.
+	"""
+	dn_item_names = [item.name for item in doc.items if item.name]
+
+	# Pass 1: rows matched by dn_detail (DN item row name)
+	if dn_item_names:
+		si_items_by_detail = frappe.get_all(
+			"Sales Invoice Item",
+			filters={"dn_detail": ["in", dn_item_names]},
+			pluck="name",
+		)
+		for si_item_name in si_items_by_detail:
+			frappe.db.set_value(
+				"Sales Invoice Item",
+				si_item_name,
+				{"dn_detail": None, "delivery_note": None},
+				update_modified=False,
+			)
+
+	# Pass 2: rows matched by delivery_note (DN document name) — catches any
+	# SI items that reference this DN header but whose dn_detail differs
+	# (e.g. manually linked rows, or rows from a previous partial delivery).
+	si_items_by_dn = frappe.get_all(
 		"Sales Invoice Item",
-		filters={"dn_detail": ["in", dn_item_names]},
+		filters={"delivery_note": doc.name},
 		pluck="name",
 	)
-
-	for si_item_name in si_items:
+	for si_item_name in si_items_by_dn:
 		frappe.db.set_value(
 			"Sales Invoice Item",
 			si_item_name,
-			{
-				"dn_detail": None,
-				"delivery_note": None,
-			},
+			{"dn_detail": None, "delivery_note": None},
 			update_modified=False,
 		)
 
