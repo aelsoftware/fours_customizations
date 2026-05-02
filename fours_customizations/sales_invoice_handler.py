@@ -535,7 +535,7 @@ def _create_draft_delivery_note(doc, sales_order=None):
 					"Sales Invoice Item",
 					si_item.name,
 					{
-						"dn_detail": dn_item_name,
+						# "dn_detail": dn_item_name,
 						# "delivery_note": dn.name,
 					},
 					update_modified=False,
