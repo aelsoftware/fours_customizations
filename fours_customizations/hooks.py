@@ -31,6 +31,7 @@ doc_events = {
 		"on_cancel": "fours_customizations.sales_order_handler.on_cancel",
 	},
 	"Delivery Note": {
+		"before_cancel": "fours_customizations.delivery_note_handler.before_cancel",
 		"on_cancel": "fours_customizations.delivery_note_handler.on_cancel",
 		"on_trash": "fours_customizations.delivery_note_handler.on_trash",
 	},

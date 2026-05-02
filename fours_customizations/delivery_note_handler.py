@@ -1,6 +1,12 @@
 import frappe
 
 
+def before_cancel(doc, method=None):
+	"""Unlink all back-references before ERPNext's link validation runs."""
+	_unlink_si_items(doc)
+	_unlink_so_items(doc)
+
+
 def on_cancel(doc, method=None):
 	"""When a Delivery Note is cancelled, unlink all back-references."""
 	_unlink_si_items(doc)
