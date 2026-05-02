@@ -28,6 +28,7 @@ doc_events = {
 		"on_cancel": "fours_customizations.sales_invoice_handler.on_cancel",
 	},
 	"Sales Order": {
+		"before_cancel": "fours_customizations.sales_order_handler.before_cancel",
 		"on_cancel": "fours_customizations.sales_order_handler.on_cancel",
 	},
 	"Delivery Note": {
