@@ -24,6 +24,16 @@ def before_insert(doc, method=None):
     for item in doc.items:
         item.sales_order = None
         item.so_detail = None
+        
+def validate(doc, method=None):
+    if not doc.amended_from:
+        return
+
+    doc.flags.ignore_links = True
+
+    for item in doc.items:
+        item.sales_order = None
+        item.so_detail = None
 
 
 def before_save(doc, method=None):

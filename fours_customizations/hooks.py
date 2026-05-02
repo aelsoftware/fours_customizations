@@ -27,6 +27,7 @@ doc_events = {
 		"before_cancel": "fours_customizations.sales_invoice_handler.before_cancel",
 		"on_cancel": "fours_customizations.sales_invoice_handler.on_cancel",
 		"before_insert": "fours_customizations.sales_invoice_handler.before_insert",
+		"validate": "fours_customizations.sales_invoice_handler.validate",
 	},
 	"Sales Order": {
 		"before_cancel": "fours_customizations.sales_order_handler.before_cancel",
