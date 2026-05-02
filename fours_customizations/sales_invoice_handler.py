@@ -52,7 +52,7 @@ def before_save(doc, method=None):
 
 
 	doc.update_outstanding_for_self = 0
-	doc.update_billed_amount_in_sales_order = 0
+	doc.update_billed_amount_in_sales_order = 1
  
 	doc.flags.ignore_links = True  # VERY IMPORTANT
 	for item in doc.items:
