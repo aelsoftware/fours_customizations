@@ -42,6 +42,12 @@ def before_save(doc, method=None):
 
 
 	doc.update_outstanding_for_self = 0
+ 
+	doc.flags.ignore_links = True  # VERY IMPORTANT
+	for item in doc.items:
+		item.sales_order = None
+		item.so_detail = None
+  
 	if doc.is_return or doc.return_against:
 		dn_parents = frappe.get_all(
 			"Delivery Note Item",
