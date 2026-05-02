@@ -77,6 +77,7 @@ def on_submit(doc, method=None):
 
 
 def before_cancel(doc, method=None):
+	doc.flags.ignore_links = True
 	if doc.docstatus != 1:
 		return
     
@@ -100,7 +101,6 @@ def before_cancel(doc, method=None):
 	# Always suppress link validation — we have cleared the item-level links
 	# above, but the validator also checks reverse references (JEs, DN items,
 	# etc.) that cannot all be cleared without amending submitted documents.
-	doc.flags.ignore_links = True
 
 
 def on_cancel(doc, method=None):
