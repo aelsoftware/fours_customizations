@@ -4,6 +4,7 @@ import frappe
 def before_cancel(doc, method=None):
 	"""Clear all back-references to this SO and suppress link validation
 	before ERPNext's validator runs."""
+	_cancel_stock_reservations(doc)
 	_unlink_si_items(doc)
 	_unlink_dn_items(doc)
 	frappe.db.set_value(
@@ -30,14 +31,53 @@ def on_cancel(doc, method=None):
 	)
 
 
+def _cancel_stock_reservations(doc):
+	"""Cancel any active Stock Reservation Entries for this SO so ERPNext
+	does not block the SO cancel due to reserved stock."""
+	if not frappe.db.table_exists("Stock Reservation Entry"):
+		return
+
+	sre_names = frappe.get_all(
+		"Stock Reservation Entry",
+		filters={
+			"voucher_type": "Sales Order",
+			"voucher_no": doc.name,
+			"docstatus": 1,
+		},
+		pluck="name",
+	)
+
+	for sre_name in sre_names:
+		sre = frappe.get_doc("Stock Reservation Entry", sre_name)
+		sre.flags.ignore_permissions = True
+		sre.flags.ignore_links = True
+		sre.cancel()
+
+
 def _unlink_si_items(doc):
-	"""Clear sales_order and so_detail on SI item rows linked to this SO,
-	and clear dn_detail/delivery_note so the SI↔DN link doesn't block the cancel."""
+	"""Clear all SO/DN back-references on SI header and item rows linked to this SO."""
 	so_item_names = [item.name for item in doc.items if item.name]
+
+	# ── SI header rows linked to this SO ─────────────────────────────────────
+	# The Sales Invoice header can carry a sales_order field; clear those too.
+	si_names_by_so = frappe.get_all(
+		"Sales Invoice",
+		filters={"sales_order": doc.name, "docstatus": ["!=", 2]},
+		pluck="name",
+	)
+	for si_name in si_names_by_so:
+		frappe.db.set_value(
+			"Sales Invoice",
+			si_name,
+			"sales_order",
+			None,
+			update_modified=False,
+		)
+
 	if not so_item_names:
 		return
 
-	# Find SI items linked to this SO via so_detail
+	# ── SI item rows linked via so_detail ─────────────────────────────────────
 	si_items = frappe.get_all(
 		"Sales Invoice Item",
 		filters={"so_detail": ["in", so_item_names]},
@@ -56,7 +96,7 @@ def _unlink_si_items(doc):
 			update_modified=False,
 		)
 
-	# Also catch any SI items linked by sales_order name directly
+	# ── SI item rows linked via sales_order name directly ────────────────────
 	si_items_by_so = frappe.get_all(
 		"Sales Invoice Item",
 		filters={"sales_order": doc.name},
