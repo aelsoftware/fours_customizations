@@ -174,14 +174,15 @@ def before_submit(doc, method=None):
 
 
 def on_submit(doc, method=None):
-	"""Entry point: validate payments and create Payment Entries."""
-	if not flt(doc.custom_include_payment):
-		return
+	"""Create Delivery Note, then validate payments and create Payment Entries."""
 	if not _automation_enabled(doc.company):
 		return
 
-	_validate_payments(doc)
-	_create_payment_entries(doc)
+	_create_delivery_note(doc)
+
+	if flt(doc.custom_include_payment):
+		_validate_payments(doc)
+		_create_payment_entries(doc)
 
 
 def on_cancel(doc, method=None):
@@ -371,3 +372,110 @@ def _create_payment_entries(doc):
 			f"{label} {', '.join(created)} created for {doc.name}.",
 			alert=True,
 		)
+
+# ── delivery note creation ────────────────────────────────────────────────────
+
+def _create_delivery_note(doc):
+	"""
+	Insert a draft Delivery Note from the submitted Sales Order.
+
+	Rules:
+	  • Only stock items (is_stock_item = 1) are included.
+	  • If every eligible item already has a DN link (dn_detail), skip entirely
+	    to avoid duplicates on re-runs.
+	  • Posting date/time is copied from the SO so stock valuations land on the
+	    correct date.
+	  • Left as a draft — the store keeper submits after physical dispatch.
+	"""
+	if not doc.items:
+		return
+
+	# Collect stock item codes in one query
+	stock_item_codes = {
+		row[0] for row in frappe.get_all(
+			"Item",
+			filters={
+				"name": ("in", [i.item_code for i in doc.items if i.item_code]),
+				"is_stock_item": 1,
+			},
+			fields=["name"],
+			as_list=True,
+		)
+	}
+
+	if not stock_item_codes:
+		return
+
+	# Build eligible item list — exclude rows already linked to a DN
+	eligible = [
+		item for item in doc.items
+		if item.item_code in stock_item_codes
+		and not getattr(item, "dn_detail", None)
+		and flt(item.qty) > 0
+	]
+
+	if not eligible:
+		return
+
+	# Duplicate guard — don't create a second DN if one already exists for this SO
+	existing = frappe.db.get_value(
+		"Delivery Note",
+		{
+			"docstatus": ["!=", 2],           # not cancelled
+			"customer": doc.customer,
+			"company": doc.company,
+		},
+		filters_on_child_table=[{
+			"doctype": "Delivery Note Item",
+			"filters": [["against_sales_order", "=", doc.name]],
+		}],
+	)
+	if existing:
+		frappe.msgprint(
+			f"Delivery Note {existing} already exists for {doc.name}. Skipping.",
+			alert=True,
+		)
+		return
+
+	dn = frappe.new_doc("Delivery Note")
+	dn.customer          = doc.customer
+	dn.customer_name     = doc.customer_name
+	dn.company           = doc.company
+	dn.set_warehouse     = doc.set_warehouse
+	dn.sales_partner     = doc.sales_partner
+	dn.currency          = doc.currency
+	dn.conversion_rate   = doc.conversion_rate
+	dn.selling_price_list      = doc.selling_price_list
+	dn.price_list_currency     = doc.price_list_currency
+	dn.plc_conversion_rate     = doc.plc_conversion_rate
+	dn.ignore_pricing_rule     = 1
+	dn.set_posting_time  = 1
+	dn.posting_date      = doc.transaction_date
+	dn.posting_time      = getattr(doc, "transaction_time", None) or "00:00:00"
+	dn.remarks           = f"Auto-created from Sales Order {doc.name}"
+	dn.cost_center       = frappe.get_cached_value("Company", doc.company, "cost_center")
+
+	for item in eligible:
+		dn.append("items", {
+			"item_code":            item.item_code,
+			"item_name":            item.item_name,
+			"description":          item.description,
+			"qty":                  flt(item.qty),
+			"uom":                  item.uom,
+			"stock_uom":            item.stock_uom,
+			"conversion_factor":    flt(item.conversion_factor) or 1,
+			"rate":                 flt(item.rate),
+			"price_list_rate":      flt(item.price_list_rate),
+			"discount_percentage":  flt(item.discount_percentage),
+			"discount_amount":      flt(item.discount_amount),
+			"warehouse":            item.warehouse or doc.set_warehouse,
+			"cost_center":          item.cost_center,
+			"against_sales_order":  doc.name,
+			"so_detail":            item.name,
+		})
+
+	if not dn.items:
+		return
+
+	dn.insert(ignore_permissions=True)
+	frappe.msgprint(f"Draft Delivery Note {dn.name} created for {doc.name}.", alert=True)
