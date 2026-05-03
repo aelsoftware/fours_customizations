@@ -137,6 +137,9 @@ after_migrate = "fours_customizations.install.after_install"
 # Hook on document methods and events
 
 doc_events = {
+    "Delivery Note": {
+		"on_trash": "fours_customizations.delivery_note_handler.on_trash",
+	},
 	"Salary Slip": {
 		"before_save": "fours_customizations.salary_slip_handler.calculate_and_add_deductions",
 		"before_insert": "fours_customizations.salary_slip_handler.calculate_and_add_deductions",
