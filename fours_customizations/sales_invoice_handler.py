@@ -47,8 +47,8 @@ def before_save(doc, method=None):
 		# ERPNext auto-sets update_stock=1 when Include Payment (is_pos) is enabled.
 		# Override that: disable update_stock and set warehouse so the auto-created
 		# Delivery Note (on_submit) picks up the correct warehouse for its items.
+		doc.update_stock = 0
 		if doc.is_pos:
-			doc.update_stock = 0
 			doc.set_posting_time = 1
 			doc.set_warehouse = "Main Store - 4S"
 			for item in doc.items:
