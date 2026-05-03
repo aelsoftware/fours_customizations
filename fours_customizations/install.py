@@ -8,36 +8,6 @@ def after_install():
 	create_salary_components()
 	create_sales_invoice_custom_fields()
 	create_journal_entry_custom_fields()
-	create_sales_order_custom_fields()
- 
- # ── Add this block inside after_install() in install.py ──────────────────────
-# after_install():
-#     ...existing calls...
-#     create_sales_order_custom_fields()   # ← add this line
-# ─────────────────────────────────────────────────────────────────────────────
-
-def create_sales_order_custom_fields():
-	"""Add a back-link field on Sales Order pointing to the originating Sales Invoice."""
-	from frappe.custom.doctype.custom_field.custom_field import create_custom_fields
-
-	custom_fields = {
-		"Sales Order": [
-			{
-				"fieldname": "custom_sales_invoice",
-				"label": "Source Sales Invoice",
-				"fieldtype": "Link",
-				"options": "Sales Invoice",
-				"insert_after": "order_type",
-				"read_only": 1,
-				"no_copy": 1,
-				"description": "Auto-populated when this SO is created from a Sales Invoice submit.",
-			},
-		],
-	}
-
-	create_custom_fields(custom_fields, update=True)
-	frappe.db.commit()
-	print("Custom field 'custom_sales_invoice' added to Sales Order.")
 
 
 def create_designation_custom_fields():
