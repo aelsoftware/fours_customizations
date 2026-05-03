@@ -115,22 +115,22 @@ def before_cancel(doc, method=None):
 	doc.flags.ignore_links = True
 	doc.flags.ignore_validate = True
 
-	"""Clear all back-references on this SI and suppress link validation
-	before ERPNext's validator runs."""
-	# Clear SO/DN links on SI item rows so the validator does not find
-	# SI → SO or SI → DN connections that would block the cancel.
-	for item in doc.items:
-		frappe.db.set_value(
-			"Sales Invoice Item",
-			item.name,
-			{
-				"sales_order": None,
-				"so_detail": None,
-				"dn_detail": None,
-				"delivery_note": None,
-			},
-			update_modified=False,
-		)
+	# """Clear all back-references on this SI and suppress link validation
+	# before ERPNext's validator runs."""
+	# # Clear SO/DN links on SI item rows so the validator does not find
+	# # SI → SO or SI → DN connections that would block the cancel.
+	# for item in doc.items:
+	# 	frappe.db.set_value(
+	# 		"Sales Invoice Item",
+	# 		item.name,
+	# 		{
+	# 			"sales_order": None,
+	# 			"so_detail": None,
+	# 			"dn_detail": None,
+	# 			"delivery_note": None,
+	# 		},
+	# 		update_modified=False,
+	# 	)
 
 	# Always suppress link validation — we have cleared the item-level links
 	# above, but the validator also checks reverse references (JEs, DN items,

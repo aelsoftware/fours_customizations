@@ -5,15 +5,15 @@ def before_cancel(doc, method=None):
     
 	doc.flags.ignore_links = True
 	doc.flags.ignore_validate = True
-	"""Unlink all back-references and suppress link validation on cancel."""
-	_unlink_si_items(doc)
-	_unlink_so_items(doc)
-	# Suppress ERPNext's link validator entirely — we have already cleared all
-	# back-references above, but the validator also checks the reverse direction
-	# (fields on Delivery Note that point to Sales Invoice / Sales Order) which
-	# we cannot clear without amending a submitted document. ignore_links bypasses
-	# that check so the cancel can proceed.
-	doc.flags.ignore_links = True
+	# """Unlink all back-references and suppress link validation on cancel."""
+	# _unlink_si_items(doc)
+	# _unlink_so_items(doc)
+	# # Suppress ERPNext's link validator entirely — we have already cleared all
+	# # back-references above, but the validator also checks the reverse direction
+	# # (fields on Delivery Note that point to Sales Invoice / Sales Order) which
+	# # we cannot clear without amending a submitted document. ignore_links bypasses
+	# # that check so the cancel can proceed.
+	# doc.flags.ignore_links = True
 
 
 def on_cancel(doc, method=None):
