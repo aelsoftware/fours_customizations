@@ -105,21 +105,14 @@ def _build_debt_error(doc, outstanding_rows: list[dict], first_name: str) -> str
 <div style="font-family:'Segoe UI',Arial,sans-serif;line-height:1.7;color:#222;">
 
   <p style="font-size:15px;margin-bottom:4px;">
-	<b>Respectfully,&nbsp;{first_name},</b>
+	<b>{first_name},</b>
   </p>
 
-  <p style="margin-top:0;font-size:13px;color:#555;font-style:italic;">
-	— A Formal Notice of Outstanding Debt —
-  </p>
 
   <hr style="border:none;border-top:2px solid #c0392b;margin:8px 0 14px;">
 
   <p>
-	It is most respectfully brought before Your Honour that the customer
-	<b>{customer_name}</b> stands presently indebted to <b>{company}</b>
-	with unresolved financial obligations that remain outstanding and
-	unpaid in our books of account. The said obligations are recorded
-	across the following receivable account(s):
+	<b>{customer_name}</b> currently carries an outstanding receivable balance in the following:
   </p>
 
   <table style="border-collapse:collapse;width:100%;margin:10px 0 16px;font-size:13px;">
@@ -142,21 +135,9 @@ def _build_debt_error(doc, outstanding_rows: list[dict], first_name: str) -> str
   </table>
 
   <p>
-	{first_name}, it is the considered, firm, and unequivocal position of
-	this establishment that extending a further Sales Order to a party
-	who has not yet honoured their prior financial commitment would be
-	<b>commercially imprudent</b>, <b>financially irresponsible</b>, and
-	wholly contrary to the sound principles of prudent credit management.
-	To do so would, in effect, reward the conduct of non-payment,
-	undermine the financial integrity of <b>{company}</b>, and expose the
-	business to compounding credit risk without justification.
-  </p>
-
-  <p>
-	It is therefore most respectfully submitted that <b>{customer_name}</b>
-	must first <b>settle in full</b> the total outstanding due amount of
-	{total_lines} before any new order may be entertained, processed,
-	or approved by this establishment.
+	<b>{customer_name}</b> must first <b>settle in full</b> the total outstanding due amount of
+	{total_lines} before any new order may be processed,
+	or approved.
   </p>
 
   <p style="background:#fff3cd;border-left:4px solid #f0a500;
