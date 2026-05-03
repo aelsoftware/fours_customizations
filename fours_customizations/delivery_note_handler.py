@@ -20,7 +20,8 @@ def on_cancel(doc, method=None):
 	# # """When a Delivery Note is cancelled, unlink all back-references."""
 	# _unlink_si_items(doc)
 	# _unlink_so_items(doc)
-	a =1;
+	doc.flags.ignore_links = True
+	doc.flags.ignore_validate = True
 
 
 def on_trash(doc, method=None):
