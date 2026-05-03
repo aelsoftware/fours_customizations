@@ -1,26 +1,196 @@
 """
 Sales Order Handler — Fours Customizations
 ==========================================
-When a Sales Order with custom_include_payment=1 is submitted, this module:
-  1. Validates that: sum(custom_payments) − custom_change_amount == grand_total
-  2. Distributes the change against the payment row whose account matches
-     custom_account_for_change_amount (fallback: last row).
-  3. Creates one submitted Payment Entry per effective payment row.
+Hooks fired on Sales Order:
 
-On cancellation every PE created for this SO is cancelled in reverse order.
+  before_submit
+    • Checks whether the customer carries any unreconciled receivable balance
+      across ALL receivable accounts for this company.  If so, submission is
+      blocked with a formal notice addressed to the logged-in user.
+
+  on_submit
+    • If custom_include_payment=1, validates custom_payments vs. grand_total
+      (accounting for change) and creates one submitted Payment Entry per row.
+
+  on_cancel
+    • Cancels every Payment Entry that was created from this Sales Order.
 """
 
 import frappe
-from frappe.utils import flt, nowdate
+from frappe.utils import flt, fmt_money, nowdate
 from erpnext.accounts.party import get_party_account
 
-# ── helpers ──────────────────────────────────────────────────────────────────
+# ── helpers ───────────────────────────────────────────────────────────────────
 
 def _automation_enabled(company: str) -> bool:
 	return bool(frappe.db.get_value("Company", company, "enable_selling_automations"))
 
 
+def _get_session_first_name() -> str:
+	"""Return the first name of the currently logged-in user."""
+	full_name = (
+		frappe.db.get_value("User", frappe.session.user, "full_name") or ""
+	).strip()
+	if not full_name:
+		return "Esteemed Colleague"
+	return full_name.split()[0]
+
+
+def _get_customer_outstanding(customer: str, company: str) -> list[dict]:
+	"""
+	Return a list of dicts describing every receivable account in which
+	this customer carries a positive (debit-heavy) balance.
+
+	Each dict: { account, balance, currency }
+	"""
+	rows = frappe.db.sql(
+		"""
+		SELECT
+			gle.account,
+			SUM(gle.debit - gle.credit)   AS balance,
+			a.account_currency            AS currency
+		FROM `tabGL Entry` gle
+		INNER JOIN `tabAccount` a
+			ON a.name = gle.account
+		WHERE
+			gle.party_type  = 'Customer'
+			AND gle.party   = %(customer)s
+			AND gle.company = %(company)s
+			AND gle.is_cancelled = 0
+			AND a.account_type  = 'Receivable'
+		GROUP BY gle.account, a.account_currency
+		HAVING balance > 0.005
+		ORDER BY balance DESC
+		""",
+		{"customer": customer, "company": company},
+		as_dict=True,
+	)
+	return rows
+
+
+def _build_debt_error(doc, outstanding_rows: list[dict], first_name: str) -> str:
+	"""
+	Compose a formal, judge-addressed HTML error message that names the
+	customer, lists every outstanding account, and states the total due.
+	"""
+	customer_name  = doc.customer_name or doc.customer
+	so_name        = doc.name
+	company        = doc.company
+
+	# ── grand total across all accounts (may be multi-currency; sum same-ccy) ──
+	# Group by currency for a clean per-currency total
+	by_currency: dict[str, float] = {}
+	for r in outstanding_rows:
+		by_currency[r.currency] = by_currency.get(r.currency, 0.0) + flt(r.balance)
+
+	# ── account breakdown rows ──
+	account_rows_html = ""
+	for r in outstanding_rows:
+		formatted = fmt_money(r.balance, currency=r.currency)
+		account_rows_html += (
+			f"<tr>"
+			f"<td style='padding:6px 12px;border:1px solid #ddd;'>{r.account}</td>"
+			f"<td style='padding:6px 12px;border:1px solid #ddd;text-align:right;"
+			f"font-weight:600;color:#c0392b;'>{formatted}</td>"
+			f"</tr>"
+		)
+
+	# ── per-currency total line(s) ──
+	total_lines = " | ".join(
+		f"<b>{fmt_money(amt, currency=ccy)}</b>"
+		for ccy, amt in by_currency.items()
+	)
+
+	msg = f"""
+<div style="font-family:'Segoe UI',Arial,sans-serif;line-height:1.7;color:#222;">
+
+  <p style="font-size:15px;margin-bottom:4px;">
+	<b>Respectfully,&nbsp;{first_name},</b>
+  </p>
+
+  <p style="margin-top:0;font-size:13px;color:#555;font-style:italic;">
+	— A Formal Notice of Outstanding Debt —
+  </p>
+
+  <hr style="border:none;border-top:2px solid #c0392b;margin:8px 0 14px;">
+
+  <p>
+	It is most respectfully brought before Your Honour that the customer
+	<b>{customer_name}</b> stands presently indebted to <b>{company}</b>
+	with unresolved financial obligations that remain outstanding and
+	unpaid in our books of account. The said obligations are recorded
+	across the following receivable account(s):
+  </p>
+
+  <table style="border-collapse:collapse;width:100%;margin:10px 0 16px;font-size:13px;">
+	<thead>
+	  <tr style="background:#f0f0f0;">
+		<th style="padding:7px 12px;border:1px solid #ddd;text-align:left;">Receivable Account</th>
+		<th style="padding:7px 12px;border:1px solid #ddd;text-align:right;">Outstanding Balance</th>
+	  </tr>
+	</thead>
+	<tbody>
+	  {account_rows_html}
+	</tbody>
+	<tfoot>
+	  <tr style="background:#fff5f5;">
+		<td style="padding:7px 12px;border:1px solid #ddd;font-weight:700;">Total Due</td>
+		<td style="padding:7px 12px;border:1px solid #ddd;text-align:right;
+				   font-weight:700;color:#c0392b;font-size:14px;">{total_lines}</td>
+	  </tr>
+	</tfoot>
+  </table>
+
+  <p>
+	{first_name}, it is the considered, firm, and unequivocal position of
+	this establishment that extending a further Sales Order to a party
+	who has not yet honoured their prior financial commitment would be
+	<b>commercially imprudent</b>, <b>financially irresponsible</b>, and
+	wholly contrary to the sound principles of prudent credit management.
+	To do so would, in effect, reward the conduct of non-payment,
+	undermine the financial integrity of <b>{company}</b>, and expose the
+	business to compounding credit risk without justification.
+  </p>
+
+  <p>
+	It is therefore most respectfully submitted that <b>{customer_name}</b>
+	must first <b>settle in full</b> the total outstanding due amount of
+	{total_lines} before any new order may be entertained, processed,
+	or approved by this establishment.
+  </p>
+
+  <p style="background:#fff3cd;border-left:4px solid #f0a500;
+			 padding:10px 14px;border-radius:3px;font-size:13px;">
+	⚖️ &nbsp;The submission of Sales Order <b>{so_name}</b> has been
+	<b>withheld</b> by the system, pending full resolution and settlement
+	of the above-stated financial obligation.
+  </p>
+
+</div>
+"""
+	return msg
+
+
 # ── hooks ─────────────────────────────────────────────────────────────────────
+
+def before_submit(doc, method=None):
+	"""Block SO submission if the customer has any outstanding receivable balance.
+
+	Bypassed entirely when the customer's custom_allow_credit flag is checked —
+	meaning the business has explicitly approved this customer for credit trading.
+	"""
+	allow_credit = frappe.db.get_value("Customer", doc.customer, "custom_allow_credit")
+	if allow_credit:
+		return  # Customer is approved for credit — skip debt check
+
+	outstanding = _get_customer_outstanding(doc.customer, doc.company)
+	if not outstanding:
+		return  # All clear — no debt
+
+	first_name = _get_session_first_name()
+	msg = _build_debt_error(doc, outstanding, first_name)
+	frappe.throw(msg, title="⚖️ Outstanding Debt — Submission Blocked")
+
 
 def on_submit(doc, method=None):
 	"""Entry point: validate payments and create Payment Entries."""
