@@ -17,9 +17,10 @@ def before_cancel(doc, method=None):
 
 
 def on_cancel(doc, method=None):
-	# """When a Delivery Note is cancelled, unlink all back-references."""
-	_unlink_si_items(doc)
-	_unlink_so_items(doc)
+	# # """When a Delivery Note is cancelled, unlink all back-references."""
+	# _unlink_si_items(doc)
+	# _unlink_so_items(doc)
+	a =1;
 
 
 def on_trash(doc, method=None):
