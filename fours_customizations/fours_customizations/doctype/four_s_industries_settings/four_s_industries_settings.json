@@ -1,378 +1,378 @@
 {
- "actions": [],
- "creation": "2026-05-28 00:00:00",
- "doctype": "DocType",
- "editable_grid": 1,
- "engine": "InnoDB",
- "field_order": [
-  "general_tab",
-  "default_company",
-  "column_break_company",
-  "default_warehouse",
-  "section_break_general",
-  "enable_negative_stock_automation",
-  "enable_random_reconciliation",
-  "column_break_general",
-  "enable_attendance_automation",
-  "enable_payroll_automation",
-  "sales_tab",
-  "section_break_sales",
-  "enable_so_from_si",
-  "enforce_sales_person_on_payment",
-  "column_break_sales",
-  "default_so_warehouse",
-  "section_break_commission",
-  "commission_salary_component",
-  "attendance_tab",
-  "section_break_attendance",
-  "attendance_creation_time",
-  "work_start_time",
-  "column_break_attendance",
-  "work_end_time",
-  "late_threshold_minutes",
-  "section_break_overtime",
-  "overtime_eligible",
-  "minimum_overtime_minutes",
-  "notifications_tab",
-  "section_break_notifications",
-  "attendance_notification_time",
-  "attendance_notification_recipient",
-  "column_break_notifications",
-  "attendance_notification_cc",
-  "section_break_negstock",
-  "negative_stock_notification_time",
-  "negative_stock_notification_recipient",
-  "column_break_negstock",
-  "negative_stock_notification_cc",
-  "top_movers_count",
-  "section_break_slack",
-  "slack_webhook_url",
-  "column_break_slack",
-  "slack_channel",
-  "payroll_tab",
-  "section_break_payroll",
-  "payroll_day_of_month",
-  "boss_email",
-  "column_break_payroll",
-  "payroll_cc_emails",
-  "default_payroll_company"
- ],
- "fields": [
-  {
-   "fieldname": "general_tab",
-   "fieldtype": "Tab Break",
-   "label": "General"
-  },
-  {
-   "fieldname": "default_company",
-   "fieldtype": "Link",
-   "label": "Default Company",
-   "options": "Company",
-   "reqd": 1
-  },
-  {
-   "fieldname": "column_break_company",
-   "fieldtype": "Column Break"
-  },
-  {
-   "fieldname": "default_warehouse",
-   "fieldtype": "Link",
-   "label": "Default Warehouse",
-   "options": "Warehouse"
-  },
-  {
-   "fieldname": "section_break_general",
-   "fieldtype": "Section Break",
-   "label": "Automation Toggles"
-  },
-  {
-   "default": "1",
-   "fieldname": "enable_negative_stock_automation",
-   "fieldtype": "Check",
-   "label": "Enable Negative Stock Automation"
-  },
-  {
-   "default": "1",
-   "fieldname": "enable_random_reconciliation",
-   "fieldtype": "Check",
-   "label": "Enable Random Top-Mover Reconciliation"
-  },
-  {
-   "fieldname": "column_break_general",
-   "fieldtype": "Column Break"
-  },
-  {
-   "default": "1",
-   "fieldname": "enable_attendance_automation",
-   "fieldtype": "Check",
-   "label": "Enable Nightly Attendance Creation"
-  },
-  {
-   "default": "1",
-   "fieldname": "enable_payroll_automation",
-   "fieldtype": "Check",
-   "label": "Enable Monthly Payroll Automation"
-  },
-  {
-   "fieldname": "sales_tab",
-   "fieldtype": "Tab Break",
-   "label": "Sales & Commission"
-  },
-  {
-   "fieldname": "section_break_sales",
-   "fieldtype": "Section Break",
-   "label": "Sales Order Automation"
-  },
-  {
-   "default": "1",
-   "description": "When a Sales Invoice is submitted, automatically create and submit a Sales Order for stock reservation.",
-   "fieldname": "enable_so_from_si",
-   "fieldtype": "Check",
-   "label": "Create Sales Order from Sales Invoice"
-  },
-  {
-   "default": "1",
-   "description": "Require Sales Person on every incoming Payment Entry whose company matches Default Company. Drives commission attribution.",
-   "fieldname": "enforce_sales_person_on_payment",
-   "fieldtype": "Check",
-   "label": "Require Sales Person on Payment Entry"
-  },
-  {
-   "fieldname": "column_break_sales",
-   "fieldtype": "Column Break"
-  },
-  {
-   "fieldname": "default_so_warehouse",
-   "fieldtype": "Link",
-   "label": "Default Sales Order Warehouse",
-   "options": "Warehouse"
-  },
-  {
-   "fieldname": "section_break_commission",
-   "fieldtype": "Section Break",
-   "label": "Commission Configuration"
-  },
-  {
-   "default": "Sales Commission",
-   "description": "Salary component used to add commission to Salary Slips. Commission rate comes from the Sales Partner; eligibility comes from the standard `amount_eligible_for_commission` field on the Sales Invoice.",
-   "fieldname": "commission_salary_component",
-   "fieldtype": "Link",
-   "label": "Commission Salary Component",
-   "options": "Salary Component"
-  },
-  {
-   "fieldname": "attendance_tab",
-   "fieldtype": "Tab Break",
-   "label": "Attendance"
-  },
-  {
-   "fieldname": "section_break_attendance",
-   "fieldtype": "Section Break",
-   "label": "Attendance Window"
-  },
-  {
-   "default": "23:00:00",
-   "description": "Time the nightly attendance creation job runs.",
-   "fieldname": "attendance_creation_time",
-   "fieldtype": "Time",
-   "label": "Attendance Creation Time"
-  },
-  {
-   "default": "08:00:00",
-   "fieldname": "work_start_time",
-   "fieldtype": "Time",
-   "label": "Work Start Time"
-  },
-  {
-   "fieldname": "column_break_attendance",
-   "fieldtype": "Column Break"
-  },
-  {
-   "default": "17:00:00",
-   "fieldname": "work_end_time",
-   "fieldtype": "Time",
-   "label": "Work End Time"
-  },
-  {
-   "default": "15",
-   "description": "Minutes after work start that are tolerated before marking an entry as late.",
-   "fieldname": "late_threshold_minutes",
-   "fieldtype": "Int",
-   "label": "Late Threshold (minutes)"
-  },
-  {
-   "fieldname": "section_break_overtime",
-   "fieldtype": "Section Break",
-   "label": "Overtime"
-  },
-  {
-   "default": "1",
-   "fieldname": "overtime_eligible",
-   "fieldtype": "Check",
-   "label": "Mark Attendance as Overtime When Checkout After Work End"
-  },
-  {
-   "default": "30",
-   "fieldname": "minimum_overtime_minutes",
-   "fieldtype": "Int",
-   "label": "Minimum Overtime (minutes)"
-  },
-  {
-   "fieldname": "notifications_tab",
-   "fieldtype": "Tab Break",
-   "label": "Notifications"
-  },
-  {
-   "fieldname": "section_break_notifications",
-   "fieldtype": "Section Break",
-   "label": "Late / Absentee Notifications"
-  },
-  {
-   "default": "09:30:00",
-   "fieldname": "attendance_notification_time",
-   "fieldtype": "Time",
-   "label": "Late/Absentee Notification Time"
-  },
-  {
-   "description": "Primary email recipient for late/absentee summaries.",
-   "fieldname": "attendance_notification_recipient",
-   "fieldtype": "Data",
-   "label": "Attendance Notification Recipient",
-   "options": "Email"
-  },
-  {
-   "fieldname": "column_break_notifications",
-   "fieldtype": "Column Break"
-  },
-  {
-   "description": "Comma-separated CC list for attendance emails.",
-   "fieldname": "attendance_notification_cc",
-   "fieldtype": "Small Text",
-   "label": "Attendance Notification CC"
-  },
-  {
-   "fieldname": "section_break_negstock",
-   "fieldtype": "Section Break",
-   "label": "Negative Stock / Reconciliation Notifications"
-  },
-  {
-   "default": "17:00:00",
-   "fieldname": "negative_stock_notification_time",
-   "fieldtype": "Time",
-   "label": "Negative Stock Notification Time"
-  },
-  {
-   "description": "Recipient for daily negative-stock / reconciliation requests.",
-   "fieldname": "negative_stock_notification_recipient",
-   "fieldtype": "Data",
-   "label": "Negative Stock Notification Recipient",
-   "options": "Email"
-  },
-  {
-   "fieldname": "column_break_negstock",
-   "fieldtype": "Column Break"
-  },
-  {
-   "description": "Comma-separated CC list for negative-stock emails.",
-   "fieldname": "negative_stock_notification_cc",
-   "fieldtype": "Small Text",
-   "label": "Negative Stock Notification CC"
-  },
-  {
-   "default": "5",
-   "description": "Top N moving items to suggest for reconciliation when no negative-stock items exist.",
-   "fieldname": "top_movers_count",
-   "fieldtype": "Int",
-   "label": "Top Movers Count"
-  },
-  {
-   "fieldname": "section_break_slack",
-   "fieldtype": "Section Break",
-   "label": "Slack"
-  },
-  {
-   "description": "Incoming webhook URL (https://hooks.slack.com/...). Used for all Slack notifications.",
-   "fieldname": "slack_webhook_url",
-   "fieldtype": "Password",
-   "label": "Slack Webhook URL"
-  },
-  {
-   "fieldname": "column_break_slack",
-   "fieldtype": "Column Break"
-  },
-  {
-   "description": "Optional channel override (e.g. #operations).",
-   "fieldname": "slack_channel",
-   "fieldtype": "Data",
-   "label": "Slack Channel"
-  },
-  {
-   "fieldname": "payroll_tab",
-   "fieldtype": "Tab Break",
-   "label": "Payroll"
-  },
-  {
-   "fieldname": "section_break_payroll",
-   "fieldtype": "Section Break",
-   "label": "Monthly Payroll Run"
-  },
-  {
-   "default": "1st day of next month",
-   "description": "When the Payroll Entry should be auto-created. \"Last day of payroll period month\" runs on the last day of the same month being paid. The other options run on the chosen day of the following month.",
-   "fieldname": "payroll_day_of_month",
-   "fieldtype": "Select",
-   "label": "Payroll Run Day",
-   "options": "1st day of next month\n2nd day of next month\n3rd day of next month\n4th day of next month\nLast day of payroll period month"
-  },
-  {
-   "description": "Boss's email — receives the payroll Excel summary.",
-   "fieldname": "boss_email",
-   "fieldtype": "Data",
-   "label": "Boss Email",
-   "options": "Email"
-  },
-  {
-   "fieldname": "column_break_payroll",
-   "fieldtype": "Column Break"
-  },
-  {
-   "description": "Comma-separated CC list for the payroll email.",
-   "fieldname": "payroll_cc_emails",
-   "fieldtype": "Small Text",
-   "label": "Payroll CC Emails"
-  },
-  {
-   "description": "Company used for the auto-created Payroll Entry. Falls back to Default Company.",
-   "fieldname": "default_payroll_company",
-   "fieldtype": "Link",
-   "label": "Payroll Company",
-   "options": "Company"
-  }
- ],
- "index_web_pages_for_search": 1,
- "issingle": 1,
- "links": [],
- "modified": "2026-05-28 00:00:00",
- "modified_by": "Administrator",
- "module": "Fours Customizations",
- "name": "4S Industries Settings",
- "owner": "Administrator",
- "permissions": [
-  {
-   "create": 1,
-   "delete": 1,
-   "email": 1,
-   "export": 1,
-   "print": 1,
-   "read": 1,
-   "report": 1,
-   "role": "System Manager",
-   "share": 1,
-   "write": 1
-  }
- ],
- "sort_field": "modified",
- "sort_order": "DESC",
- "states": [],
- "track_changes": 1
+    "actions": [],
+    "creation": "2026-05-28 00:00:00",
+    "doctype": "DocType",
+    "editable_grid": 1,
+    "engine": "InnoDB",
+    "field_order": [
+        "general_tab",
+        "default_company",
+        "column_break_company",
+        "default_warehouse",
+        "section_break_general",
+        "enable_negative_stock_automation",
+        "enable_random_reconciliation",
+        "column_break_general",
+        "enable_attendance_automation",
+        "enable_payroll_automation",
+        "sales_tab",
+        "section_break_sales",
+        "enable_so_from_si",
+        "enforce_sales_person_on_payment",
+        "column_break_sales",
+        "default_so_warehouse",
+        "section_break_commission",
+        "commission_salary_component",
+        "attendance_tab",
+        "section_break_attendance",
+        "attendance_creation_time",
+        "work_start_time",
+        "column_break_attendance",
+        "work_end_time",
+        "late_threshold_minutes",
+        "section_break_overtime",
+        "overtime_eligible",
+        "minimum_overtime_minutes",
+        "notifications_tab",
+        "section_break_notifications",
+        "attendance_notification_time",
+        "attendance_notification_recipient",
+        "column_break_notifications",
+        "attendance_notification_cc",
+        "section_break_negstock",
+        "negative_stock_notification_time",
+        "negative_stock_notification_recipient",
+        "column_break_negstock",
+        "negative_stock_notification_cc",
+        "top_movers_count",
+        "section_break_slack",
+        "slack_webhook_url",
+        "column_break_slack",
+        "slack_channel",
+        "payroll_tab",
+        "section_break_payroll",
+        "payroll_day_of_month",
+        "boss_email",
+        "column_break_payroll",
+        "payroll_cc_emails",
+        "default_payroll_company"
+    ],
+    "fields": [
+        {
+            "fieldname": "general_tab",
+            "fieldtype": "Tab Break",
+            "label": "General"
+        },
+        {
+            "fieldname": "default_company",
+            "fieldtype": "Link",
+            "label": "Default Company",
+            "options": "Company",
+            "reqd": 1
+        },
+        {
+            "fieldname": "column_break_company",
+            "fieldtype": "Column Break"
+        },
+        {
+            "fieldname": "default_warehouse",
+            "fieldtype": "Link",
+            "label": "Default Warehouse",
+            "options": "Warehouse"
+        },
+        {
+            "fieldname": "section_break_general",
+            "fieldtype": "Section Break",
+            "label": "Automation Toggles"
+        },
+        {
+            "default": "1",
+            "fieldname": "enable_negative_stock_automation",
+            "fieldtype": "Check",
+            "label": "Enable Negative Stock Automation"
+        },
+        {
+            "default": "1",
+            "fieldname": "enable_random_reconciliation",
+            "fieldtype": "Check",
+            "label": "Enable Random Top-Mover Reconciliation"
+        },
+        {
+            "fieldname": "column_break_general",
+            "fieldtype": "Column Break"
+        },
+        {
+            "default": "1",
+            "fieldname": "enable_attendance_automation",
+            "fieldtype": "Check",
+            "label": "Enable Nightly Attendance Creation"
+        },
+        {
+            "default": "1",
+            "fieldname": "enable_payroll_automation",
+            "fieldtype": "Check",
+            "label": "Enable Monthly Payroll Automation"
+        },
+        {
+            "fieldname": "sales_tab",
+            "fieldtype": "Tab Break",
+            "label": "Sales & Commission"
+        },
+        {
+            "fieldname": "section_break_sales",
+            "fieldtype": "Section Break",
+            "label": "Sales Order Automation"
+        },
+        {
+            "default": "1",
+            "description": "When a Sales Invoice is submitted, automatically create and submit a Sales Order for stock reservation.",
+            "fieldname": "enable_so_from_si",
+            "fieldtype": "Check",
+            "label": "Create Sales Order from Sales Invoice"
+        },
+        {
+            "default": "1",
+            "description": "Require Sales Person on every incoming Payment Entry whose company matches Default Company. Drives commission attribution.",
+            "fieldname": "enforce_sales_person_on_payment",
+            "fieldtype": "Check",
+            "label": "Require Sales Person on Payment Entry"
+        },
+        {
+            "fieldname": "column_break_sales",
+            "fieldtype": "Column Break"
+        },
+        {
+            "fieldname": "default_so_warehouse",
+            "fieldtype": "Link",
+            "label": "Default Sales Order Warehouse",
+            "options": "Warehouse"
+        },
+        {
+            "fieldname": "section_break_commission",
+            "fieldtype": "Section Break",
+            "label": "Commission Configuration"
+        },
+        {
+            "default": "Sales Commission",
+            "description": "Salary component used to add commission to Salary Slips. Commission rate comes from the Sales Partner; eligibility comes from the standard `amount_eligible_for_commission` field on the Sales Invoice.",
+            "fieldname": "commission_salary_component",
+            "fieldtype": "Link",
+            "label": "Commission Salary Component",
+            "options": "Salary Component"
+        },
+        {
+            "fieldname": "attendance_tab",
+            "fieldtype": "Tab Break",
+            "label": "Attendance"
+        },
+        {
+            "fieldname": "section_break_attendance",
+            "fieldtype": "Section Break",
+            "label": "Attendance Window"
+        },
+        {
+            "default": "23:00:00",
+            "description": "Time the nightly attendance creation job runs.",
+            "fieldname": "attendance_creation_time",
+            "fieldtype": "Time",
+            "label": "Attendance Creation Time"
+        },
+        {
+            "default": "08:00:00",
+            "fieldname": "work_start_time",
+            "fieldtype": "Time",
+            "label": "Work Start Time"
+        },
+        {
+            "fieldname": "column_break_attendance",
+            "fieldtype": "Column Break"
+        },
+        {
+            "default": "17:00:00",
+            "fieldname": "work_end_time",
+            "fieldtype": "Time",
+            "label": "Work End Time"
+        },
+        {
+            "default": "15",
+            "description": "Minutes after work start that are tolerated before marking an entry as late.",
+            "fieldname": "late_threshold_minutes",
+            "fieldtype": "Int",
+            "label": "Late Threshold (minutes)"
+        },
+        {
+            "fieldname": "section_break_overtime",
+            "fieldtype": "Section Break",
+            "label": "Overtime"
+        },
+        {
+            "default": "1",
+            "fieldname": "overtime_eligible",
+            "fieldtype": "Check",
+            "label": "Mark Attendance as Overtime When Checkout After Work End"
+        },
+        {
+            "default": "30",
+            "fieldname": "minimum_overtime_minutes",
+            "fieldtype": "Int",
+            "label": "Minimum Overtime (minutes)"
+        },
+        {
+            "fieldname": "notifications_tab",
+            "fieldtype": "Tab Break",
+            "label": "Notifications"
+        },
+        {
+            "fieldname": "section_break_notifications",
+            "fieldtype": "Section Break",
+            "label": "Late / Absentee Notifications"
+        },
+        {
+            "default": "09:30:00",
+            "fieldname": "attendance_notification_time",
+            "fieldtype": "Time",
+            "label": "Late/Absentee Notification Time"
+        },
+        {
+            "description": "Primary email recipient for late/absentee summaries.",
+            "fieldname": "attendance_notification_recipient",
+            "fieldtype": "Data",
+            "label": "Attendance Notification Recipient",
+            "options": "Email"
+        },
+        {
+            "fieldname": "column_break_notifications",
+            "fieldtype": "Column Break"
+        },
+        {
+            "description": "Comma-separated CC list for attendance emails.",
+            "fieldname": "attendance_notification_cc",
+            "fieldtype": "Small Text",
+            "label": "Attendance Notification CC"
+        },
+        {
+            "fieldname": "section_break_negstock",
+            "fieldtype": "Section Break",
+            "label": "Negative Stock / Reconciliation Notifications"
+        },
+        {
+            "default": "17:00:00",
+            "fieldname": "negative_stock_notification_time",
+            "fieldtype": "Time",
+            "label": "Negative Stock Notification Time"
+        },
+        {
+            "description": "Recipient for daily negative-stock / reconciliation requests.",
+            "fieldname": "negative_stock_notification_recipient",
+            "fieldtype": "Data",
+            "label": "Negative Stock Notification Recipient",
+            "options": "Email"
+        },
+        {
+            "fieldname": "column_break_negstock",
+            "fieldtype": "Column Break"
+        },
+        {
+            "description": "Comma-separated CC list for negative-stock emails.",
+            "fieldname": "negative_stock_notification_cc",
+            "fieldtype": "Small Text",
+            "label": "Negative Stock Notification CC"
+        },
+        {
+            "default": "5",
+            "description": "Top N moving items to suggest for reconciliation when no negative-stock items exist.",
+            "fieldname": "top_movers_count",
+            "fieldtype": "Int",
+            "label": "Top Movers Count"
+        },
+        {
+            "fieldname": "section_break_slack",
+            "fieldtype": "Section Break",
+            "label": "Slack"
+        },
+        {
+            "description": "Incoming webhook URL (https://hooks.slack.com/...). Used for all Slack notifications.",
+            "fieldname": "slack_webhook_url",
+            "fieldtype": "Password",
+            "label": "Slack Webhook URL"
+        },
+        {
+            "fieldname": "column_break_slack",
+            "fieldtype": "Column Break"
+        },
+        {
+            "description": "Optional channel override (e.g. #operations).",
+            "fieldname": "slack_channel",
+            "fieldtype": "Data",
+            "label": "Slack Channel"
+        },
+        {
+            "fieldname": "payroll_tab",
+            "fieldtype": "Tab Break",
+            "label": "Payroll"
+        },
+        {
+            "fieldname": "section_break_payroll",
+            "fieldtype": "Section Break",
+            "label": "Monthly Payroll Run"
+        },
+        {
+            "default": "1st day of next month",
+            "description": "When the Payroll Entry should be auto-created. \"Last day of payroll period month\" runs on the last day of the same month being paid. The other options run on the chosen day of the following month.",
+            "fieldname": "payroll_day_of_month",
+            "fieldtype": "Select",
+            "label": "Payroll Run Day",
+            "options": "1st day of next month\n2nd day of next month\n3rd day of next month\n4th day of next month\nLast day of payroll period month"
+        },
+        {
+            "description": "Boss's email — receives the payroll Excel summary.",
+            "fieldname": "boss_email",
+            "fieldtype": "Data",
+            "label": "Boss Email",
+            "options": "Email"
+        },
+        {
+            "fieldname": "column_break_payroll",
+            "fieldtype": "Column Break"
+        },
+        {
+            "description": "Comma-separated CC list for the payroll email.",
+            "fieldname": "payroll_cc_emails",
+            "fieldtype": "Small Text",
+            "label": "Payroll CC Emails"
+        },
+        {
+            "description": "Company used for the auto-created Payroll Entry. Falls back to Default Company.",
+            "fieldname": "default_payroll_company",
+            "fieldtype": "Link",
+            "label": "Payroll Company",
+            "options": "Company"
+        }
+    ],
+    "index_web_pages_for_search": 1,
+    "issingle": 1,
+    "links": [],
+    "modified": "2026-05-28 00:00:00",
+    "modified_by": "Administrator",
+    "module": "Fours Customizations",
+    "name": "Fours Industries Settings",
+    "owner": "Administrator",
+    "permissions": [
+        {
+            "create": 1,
+            "delete": 1,
+            "email": 1,
+            "export": 1,
+            "print": 1,
+            "read": 1,
+            "report": 1,
+            "role": "System Manager",
+            "share": 1,
+            "write": 1
+        }
+    ],
+    "sort_field": "modified",
+    "sort_order": "DESC",
+    "states": [],
+    "track_changes": 1
 }

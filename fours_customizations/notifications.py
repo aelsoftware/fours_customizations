@@ -2,7 +2,7 @@
 notifications.py — Shared email + Slack notification helpers.
 
 All notification recipients, times, and slack credentials live in the
-"4S Industries Settings" single doctype.  Each helper here reads the relevant
+"Fours Industries Settings" single doctype.  Each helper here reads the relevant
 fields lazily so the settings can be updated without restarting the worker.
 """
 

@@ -2,7 +2,7 @@
 attendance_handler.py — Nightly attendance creation (Req #2).
 
 `create_daily_attendance()` runs every night at the time configured in
-4S Industries Settings (default 23:00).  For every active employee it:
+Fours Industries Settings (default 23:00).  For every active employee it:
 
   1. Reads all check-in / check-out logs of type "IN" / "OUT" for the day.
   2. If no log exists at all → status "Absent".
