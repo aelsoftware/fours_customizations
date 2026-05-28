@@ -2,7 +2,7 @@
 attendance_notifier.py — Daily summary of late comers + absentees (Req #6).
 
 Reads "today's" Attendance, builds an HTML email + a Slack message, and
-sends them to the addresses configured in Fours Industries Settings.
+sends them to the addresses configured in Four S Industries Settings.
 
 The cron runs hourly; the actual send is gated by `attendance_notification_time`
 so the recipient receives exactly one daily report.

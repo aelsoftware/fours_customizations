@@ -314,14 +314,14 @@ def create_sales_order_custom_fields():
 
 
 def seed_settings_defaults():
-	"""Ensure the Fours Industries Settings single doc exists with sane defaults."""
-	if not frappe.db.exists("DocType", "Fours Industries Settings"):
+	"""Ensure the Four S Industries Settings single doc exists with sane defaults."""
+	if not frappe.db.exists("DocType", "Four S Industries Settings"):
 		return
 
 	try:
-		settings = frappe.get_doc("Fours Industries Settings")
+		settings = frappe.get_doc("Four S Industries Settings")
 	except frappe.DoesNotExistError:
-		settings = frappe.new_doc("Fours Industries Settings")
+		settings = frappe.new_doc("Four S Industries Settings")
 
 	if not settings.default_company:
 		company = frappe.defaults.get_global_default("company") or frappe.db.get_value("Company", {}, "name")

@@ -170,7 +170,7 @@ doc_events = {
 # Scheduled Tasks
 # ---------------
 # The hourly dispatcher functions each gate themselves against the time
-# configured in "Fours Industries Settings" — so the cadence stays user-editable
+# configured in "Four S Industries Settings" — so the cadence stays user-editable
 # without redeploying the app.
 
 scheduler_events = {
