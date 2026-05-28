@@ -5,3 +5,4 @@
 [post_model_sync]
 # Patches added in this section will be executed after doctypes are migrated
 fours_customizations.patches.migrate_custom_sales_person_to_sales_person
+fours_customizations.patches.migrate_sales_partner_to_custom_sales_person

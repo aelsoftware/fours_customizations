@@ -9,20 +9,23 @@ import frappe
 from frappe.model.document import Document
 
 
+PAYROLL_DAY_OPTIONS = {
+	"1st day of next month",
+	"2nd day of next month",
+	"3rd day of next month",
+	"4th day of next month",
+	"Last day of payroll period month",
+}
+
+
 class FourSIndustriesSettings(Document):
 	def validate(self):
 		self._validate_payroll_day()
-		self._validate_times()
 
 	def _validate_payroll_day(self):
-		day = int(self.payroll_day_of_month or 0)
-		if day < 1 or day > 31:
-			frappe.throw("Payroll Day of Month must be between 1 and 31.")
-
-	def _validate_times(self):
-		# Times are stored as strings; Frappe will validate format. Nothing extra
-		# to enforce — we tolerate sensible time ordering rather than fight it.
-		return
+		day = (self.payroll_day_of_month or "").strip()
+		if day and day not in PAYROLL_DAY_OPTIONS:
+			frappe.throw(f"Payroll Run Day {day!r} is not one of the supported options.")
 
 
 def get_settings():

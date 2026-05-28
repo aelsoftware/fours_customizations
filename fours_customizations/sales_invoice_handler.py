@@ -33,6 +33,41 @@ def _default_pos_warehouse():
         return get_setting("default_warehouse")
 
 
+def _sync_custom_sales_person_to_team(doc):
+        """When `custom_sales_person` is set, ensure the SI's `sales_team` table
+        carries that person at 100% allocation.
+
+        Idempotent: if the table already contains the same person at 100%, this is
+        a no-op.  If a different person is in there, the table is replaced so the
+        custom_sales_person is the single owner of this invoice.
+        """
+        partner = getattr(doc, "custom_sales_person", None)
+        if not partner:
+                return
+
+        rate = flt(frappe.db.get_value("Sales Person", partner, "commission_rate"))
+        allocated_amount = flt(doc.base_grand_total or doc.grand_total or 0)
+
+        # If the table already has exactly this person at 100%, just refresh
+        # the amount/rate and bail out.
+        if len(doc.get("sales_team") or []) == 1:
+                row = doc.sales_team[0]
+                if row.sales_person == partner and flt(row.allocated_percentage) == 100:
+                        row.allocated_amount = allocated_amount
+                        row.commission_rate = rate
+                        return
+
+        # Otherwise, replace the table with a single 100% entry.
+        doc.set("sales_team", [])
+        doc.append("sales_team", {
+                "sales_person": partner,
+                "allocated_percentage": 100,
+                "allocated_amount": allocated_amount,
+                "commission_rate": rate,
+                "incentives": 0,
+        })
+
+
 def before_submit(doc, method=None):
         doc.update_outstanding_for_self = 0
         # Silently enable negative stock on items that would otherwise block.
@@ -57,6 +92,9 @@ def before_save(doc, method=None):
                                 doc.set_warehouse = pos_warehouse
                                 for item in doc.items:
                                         item.warehouse = pos_warehouse
+
+        # Sync custom_sales_person → sales_team child table at 100% allocation.
+        _sync_custom_sales_person_to_team(doc)
 
         doc.update_outstanding_for_self = 0
 

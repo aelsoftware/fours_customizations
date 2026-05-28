@@ -11,10 +11,18 @@ file is built and attached to an email sent to the boss.
 
 from __future__ import annotations
 
+from datetime import date
 from io import BytesIO
 
 import frappe
-from frappe.utils import flt, getdate, get_first_day, get_last_day, now_datetime
+from frappe.utils import (
+	add_months,
+	flt,
+	get_first_day,
+	get_last_day,
+	getdate,
+	now_datetime,
+)
 
 from fours_customizations.fours_customizations.doctype.four_s_industries_settings.four_s_industries_settings import (
 	get_settings,
@@ -22,45 +30,65 @@ from fours_customizations.fours_customizations.doctype.four_s_industries_setting
 from fours_customizations.notifications import send_email
 
 
-def _last_day(year: int, month: int) -> int:
-	from calendar import monthrange
+_OFFSET_DAYS = {
+	"1st day of next month": 1,
+	"2nd day of next month": 2,
+	"3rd day of next month": 3,
+	"4th day of next month": 4,
+}
 
-	return monthrange(year, month)[1]
+
+def _payroll_period(settings, run_date: date) -> tuple[date, date]:
+	"""Given a *run_date* (i.e. today, the day the dispatcher fires), return
+	the (start, end) of the salary period this Payroll Entry should cover.
+
+	    Run day                                Period covered
+	    "Last day of payroll period month"     Same month as run_date
+	    "Nth day of next month"                Previous month
+	"""
+	option = (settings.payroll_day_of_month or "1st day of next month").strip()
+	if option == "Last day of payroll period month":
+		return get_first_day(run_date), get_last_day(run_date)
+	prev = add_months(run_date, -1)
+	return get_first_day(prev), get_last_day(prev)
 
 
-def _should_run_today(settings) -> bool:
-	target = int(settings.payroll_day_of_month or 30)
-	today = getdate(now_datetime())
-	last = _last_day(today.year, today.month)
-	effective_day = min(target, last)
-	return today.day == effective_day
+def _should_run_today(settings, today: date) -> bool:
+	option = (settings.payroll_day_of_month or "1st day of next month").strip()
+
+	if option == "Last day of payroll period month":
+		return today == get_last_day(today)
+
+	wanted_day = _OFFSET_DAYS.get(option, 1)
+	return today.day == wanted_day
 
 
 def daily_payroll_dispatcher() -> dict:
 	settings = get_settings()
 	if not int(settings.enable_payroll_automation or 0):
 		return {"skipped": True}
-	if not _should_run_today(settings):
-		return {"skipped": True, "reason": "not the day"}
 
-	# Idempotency — only one run per (year, month) per company
 	today = getdate(now_datetime())
-	key = f"4s_payroll:{today.year}-{today.month}"
+	if not _should_run_today(settings, today):
+		return {"skipped": True, "reason": "not the day", "today": str(today)}
+
+	start, end = _payroll_period(settings, today)
+	key = f"4s_payroll:{start.year}-{start.month}"
 	if frappe.cache().get_value(key):
 		return {"skipped": True, "reason": "already ran"}
 
-	result = create_monthly_payroll_entry(settings)
-	frappe.cache().set_value(key, "1", expires_in_sec=60 * 60 * 24 * 3)
+	result = create_monthly_payroll_entry(settings, today, start, end)
+	frappe.cache().set_value(key, "1", expires_in_sec=60 * 60 * 24 * 7)
 	return result
 
 
-def create_monthly_payroll_entry(settings=None) -> dict:
+def create_monthly_payroll_entry(settings=None, run_date=None, start=None, end=None) -> dict:
 	if settings is None:
 		settings = get_settings()
-
-	today = getdate(now_datetime())
-	start = get_first_day(today)
-	end = get_last_day(today)
+	if run_date is None:
+		run_date = getdate(now_datetime())
+	if start is None or end is None:
+		start, end = _payroll_period(settings, run_date)
 
 	company = settings.default_payroll_company or settings.default_company
 	if not company:
@@ -75,7 +103,7 @@ def create_monthly_payroll_entry(settings=None) -> dict:
 
 	pe = frappe.new_doc("Payroll Entry")
 	pe.company = company
-	pe.posting_date = today
+	pe.posting_date = run_date
 	pe.payroll_frequency = "Monthly"
 	pe.start_date = start
 	pe.end_date = end

@@ -168,6 +168,14 @@ def create_sales_invoice_custom_fields():
 	custom_fields = {
 		"Sales Invoice": [
 			{
+				"fieldname": "custom_sales_person",
+				"label": "Sales Person",
+				"fieldtype": "Link",
+				"options": "Sales Person",
+				"insert_after": "sales_partner",
+				"description": "When set, the Sales Team is automatically populated with this person at 100% allocation. Sits just before Amount Eligible for Commission.",
+			},
+			{
 				"fieldname": "custom_auto_created_sales_order",
 				"label": "Auto-created Sales Order",
 				"fieldtype": "Link",

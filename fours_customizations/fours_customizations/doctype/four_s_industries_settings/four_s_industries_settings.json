@@ -317,11 +317,12 @@
    "label": "Monthly Payroll Run"
   },
   {
-   "default": "30",
-   "description": "Day of month to auto-create the Payroll Entry (1-31). If the month has fewer days, runs on the last day.",
+   "default": "1st day of next month",
+   "description": "When the Payroll Entry should be auto-created. \"Last day of payroll period month\" runs on the last day of the same month being paid. The other options run on the chosen day of the following month.",
    "fieldname": "payroll_day_of_month",
-   "fieldtype": "Int",
-   "label": "Payroll Day of Month"
+   "fieldtype": "Select",
+   "label": "Payroll Run Day",
+   "options": "1st day of next month\n2nd day of next month\n3rd day of next month\n4th day of next month\nLast day of payroll period month"
   },
   {
    "description": "Boss's email — receives the payroll Excel summary.",

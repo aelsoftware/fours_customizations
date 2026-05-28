@@ -1,17 +1,17 @@
-frappe.query_reports["Sales Partner Performance"] = {
+frappe.query_reports["Sales Person Commission Summary"] = {
 	filters: [
 		{
 			fieldname: "from_date",
 			label: __("From Date"),
 			fieldtype: "Date",
-			default: frappe.datetime.add_months(frappe.datetime.get_today(), -1),
+			default: frappe.datetime.month_start(),
 			reqd: 1,
 		},
 		{
 			fieldname: "to_date",
 			label: __("To Date"),
 			fieldtype: "Date",
-			default: frappe.datetime.get_today(),
+			default: frappe.datetime.month_end(),
 			reqd: 1,
 		},
 		{
@@ -22,10 +22,10 @@ frappe.query_reports["Sales Partner Performance"] = {
 			default: frappe.defaults.get_user_default("Company"),
 		},
 		{
-			fieldname: "sales_partner",
-			label: __("Sales Partner"),
+			fieldname: "sales_person",
+			label: __("Sales Person"),
 			fieldtype: "Link",
-			options: "Sales Partner",
+			options: "Sales Person",
 		},
 	],
 };
