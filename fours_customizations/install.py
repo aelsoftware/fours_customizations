@@ -3,11 +3,16 @@ from frappe.custom.doctype.custom_field.custom_field import create_custom_fields
 
 
 def after_install():
-	"""Create custom fields and salary components after app installation"""
+	"""Create custom fields, salary components, and seed singletons after install/migrate."""
 	create_designation_custom_fields()
 	create_salary_components()
 	create_sales_invoice_custom_fields()
-	create_journal_entry_custom_fields()
+	create_payment_entry_custom_fields()
+	create_landed_cost_voucher_custom_fields()
+	create_item_custom_fields()
+	create_sales_order_custom_fields()
+	create_company_custom_fields()
+	seed_settings_defaults()
 
 
 def create_designation_custom_fields():
@@ -76,7 +81,6 @@ def create_designation_custom_fields():
 				"description": "Amount to deduct when employee doesn't checkout",
 				"precision": 2,
 			},
-			# Overtime Configuration Section
 			{
 				"fieldname": "overtime_configuration_section",
 				"label": "Overtime Configuration",
@@ -129,80 +133,86 @@ def create_designation_custom_fields():
 	create_custom_fields(custom_fields, update=True)
 	frappe.db.commit()
 
-	print("Custom fields added to Designation doctype successfully!")
-
 
 def create_salary_components():
-	"""Create salary components for attendance deductions and overtime"""
+	"""Create salary components for attendance deductions, overtime, and sales commission."""
 
 	components = [
-		{
-			'salary_component': 'Absent Deduction',
-			'description': 'Deduction for absence based on designation rate',
-			'type': 'Deduction'
-		},
-		{
-			'salary_component': 'Late Deduction',
-			'description': 'Deduction for late arrival based on designation rate',
-			'type': 'Deduction'
-		},
-		{
-			'salary_component': 'Early Exit Deduction',
-			'description': 'Deduction for early exit based on designation rate',
-			'type': 'Deduction'
-		},
-		{
-			'salary_component': 'No Checkout Deduction',
-			'description': 'Deduction when employee does not checkout based on designation rate',
-			'type': 'Deduction'
-		},
-		{
-			'salary_component': 'Designation Overtime Pay',
-			'description': 'Overtime payment based on designation overtime rate',
-			'type': 'Earning'
-		}
+		{"salary_component": "Absent Deduction", "type": "Deduction"},
+		{"salary_component": "Late Deduction", "type": "Deduction"},
+		{"salary_component": "Early Exit Deduction", "type": "Deduction"},
+		{"salary_component": "No Checkout Deduction", "type": "Deduction"},
+		{"salary_component": "Designation Overtime Pay", "type": "Earning"},
+		{"salary_component": "Sales Commission", "type": "Earning"},
 	]
 
 	for comp_data in components:
-		if not frappe.db.exists('Salary Component', comp_data['salary_component']):
-			comp = frappe.get_doc({
-				'doctype': 'Salary Component',
-				'salary_component': comp_data['salary_component'],
-				'description': comp_data['description'],
-				'type': comp_data['type']
-			})
-			comp.insert(ignore_permissions=True)
-			print(f"✓ Created salary component: {comp_data['salary_component']}")
+		if not frappe.db.exists("Salary Component", comp_data["salary_component"]):
+			frappe.get_doc({
+				"doctype": "Salary Component",
+				"salary_component": comp_data["salary_component"],
+				"type": comp_data["type"],
+			}).insert(ignore_permissions=True)
 
 	frappe.db.commit()
-	print("Salary components created successfully!")
 
 
 def create_sales_invoice_custom_fields():
-	"""Add custom fields to Sales Invoice, Sales Partner, and Company for selling automations"""
+	"""Add custom fields to Sales Invoice.
+
+	Note: commission Journal Entry tracking fields were removed when we moved
+	commission entirely to the Salary Slip path.  We use the standard
+	`amount_eligible_for_commission` field on the SI rather than a custom one.
+	"""
 
 	custom_fields = {
 		"Sales Invoice": [
 			{
-				"fieldname": "custom_commission_journal_entry",
-				"label": "Commission Journal Entry",
+				"fieldname": "custom_auto_created_sales_order",
+				"label": "Auto-created Sales Order",
 				"fieldtype": "Link",
-				"options": "Journal Entry",
+				"options": "Sales Order",
 				"insert_after": "total_commission",
 				"read_only": 1,
 				"no_copy": 1,
 			},
 		],
-		"Sales Partner": [
+	}
+
+	create_custom_fields(custom_fields, update=True)
+	frappe.db.commit()
+
+
+def create_payment_entry_custom_fields():
+	"""Add the canonical `sales_person` Link field on Payment Entry.
+
+	Commission is now driven entirely by who collected the payment.
+	The standard Sales Person doctype already links to an Employee and carries
+	a `commission_rate`, so no further custom fields are needed.
+	"""
+
+	custom_fields = {
+		"Payment Entry": [
 			{
-				"fieldname": "custom_supplier_account",
-				"label": "Supplier Account",
+				"fieldname": "sales_person",
+				"label": "Sales Person",
 				"fieldtype": "Link",
-				"options": "Supplier",
-				"insert_after": "commission_rate",
-				"description": "Linked Supplier for commission Journal Entry",
+				"options": "Sales Person",
+				"insert_after": "reference_no",
+				"description": "Sales Person who collected this payment. Drives commission for their Salary Slip.",
 			},
 		],
+	}
+
+	create_custom_fields(custom_fields, update=True)
+	frappe.db.commit()
+
+
+def create_company_custom_fields():
+	"""Keep the Selling Automations toggle on Company — it gates SO/DN creation
+	for the company. The commission-account field is no longer needed (no JEs)."""
+
+	custom_fields = {
 		"Company": [
 			{
 				"fieldname": "selling_automations_tab",
@@ -215,21 +225,7 @@ def create_sales_invoice_custom_fields():
 				"label": "Enable Selling Automations",
 				"fieldtype": "Check",
 				"insert_after": "selling_automations_tab",
-				"description": "Enable automatic commission Journal Entries, Delivery Notes, and advance allocation on Sales Invoices",
-			},
-			{
-				"fieldname": "selling_automations_section",
-				"label": "Commission Accounts",
-				"fieldtype": "Section Break",
-				"insert_after": "enable_selling_automations",
-				"depends_on": "eval:doc.enable_selling_automations",
-			},
-			{
-				"fieldname": "sales_commission_expense_account",
-				"label": "Sales Commission Expense Account",
-				"fieldtype": "Link",
-				"options": "Account",
-				"insert_after": "selling_automations_section",
+				"description": "Enable auto Sales Order creation, draft Delivery Notes, and advance allocation on Sales Invoices.",
 			},
 		],
 	}
@@ -237,39 +233,18 @@ def create_sales_invoice_custom_fields():
 	create_custom_fields(custom_fields, update=True)
 	frappe.db.commit()
 
-	print("Custom fields added to Sales Invoice, Sales Partner, and Company successfully!")
 
-
-def create_journal_entry_custom_fields():
-	"""Add custom fields to Journal Entry for tracking commission PE/SI links."""
+def create_landed_cost_voucher_custom_fields():
+	"""Add 'New Selling Price' column to LCV items so submit can sync Item Price."""
 
 	custom_fields = {
-		"Journal Entry": [
+		"Landed Cost Item": [
 			{
-				"fieldname": "custom_commission_payment_entry",
-				"label": "Commission Payment Entry",
-				"fieldtype": "Link",
-				"options": "Payment Entry",
-				"insert_after": "cheque_date",
-				"read_only": 1,
-				"no_copy": 1,
-			},
-			{
-				"fieldname": "custom_commission_sales_invoice",
-				"label": "Commission Sales Invoice",
-				"fieldtype": "Link",
-				"options": "Sales Invoice",
-				"insert_after": "custom_commission_payment_entry",
-				"read_only": 1,
-				"no_copy": 1,
-			},
-			{
-				"fieldname": "custom_commission_voucher_no",
-				"label": "Commission Source Voucher",
-				"fieldtype": "Data",
-				"insert_after": "custom_commission_sales_invoice",
-				"read_only": 1,
-				"no_copy": 1,
+				"fieldname": "new_selling_price",
+				"label": "New Selling Price",
+				"fieldtype": "Currency",
+				"insert_after": "applicable_charges",
+				"description": "If set, the standard selling Item Price for this item is overwritten when the LCV is submitted.",
 			},
 		],
 	}
@@ -277,4 +252,75 @@ def create_journal_entry_custom_fields():
 	create_custom_fields(custom_fields, update=True)
 	frappe.db.commit()
 
-	print("Custom fields added to Journal Entry successfully!")
+
+def create_item_custom_fields():
+	"""Track reconciliation timestamps + cause of negative-stock enablement."""
+
+	custom_fields = {
+		"Item": [
+			{
+				"fieldname": "custom_last_reconciliation_request",
+				"label": "Last Reconciliation Request",
+				"fieldtype": "Datetime",
+				"insert_after": "stock_uom",
+				"read_only": 1,
+				"no_copy": 1,
+				"description": "Last time the system asked for reconciliation of this item.",
+			},
+			{
+				"fieldname": "custom_negative_stock_auto_enabled",
+				"label": "Negative Stock Auto-Enabled",
+				"fieldtype": "Check",
+				"insert_after": "custom_last_reconciliation_request",
+				"read_only": 1,
+				"no_copy": 1,
+				"description": "Set when the system temporarily enabled negative stock on this item. Cleared after reconciliation.",
+			},
+		],
+	}
+
+	create_custom_fields(custom_fields, update=True)
+	frappe.db.commit()
+
+
+def create_sales_order_custom_fields():
+	"""Track the originating SI on auto-created Sales Orders."""
+
+	custom_fields = {
+		"Sales Order": [
+			{
+				"fieldname": "custom_source_sales_invoice",
+				"label": "Source Sales Invoice",
+				"fieldtype": "Link",
+				"options": "Sales Invoice",
+				"insert_after": "amended_from",
+				"read_only": 1,
+				"no_copy": 1,
+				"allow_on_submit": 1,
+			},
+		],
+	}
+
+	create_custom_fields(custom_fields, update=True)
+	frappe.db.commit()
+
+
+def seed_settings_defaults():
+	"""Ensure the 4S Industries Settings single doc exists with sane defaults."""
+	if not frappe.db.exists("DocType", "4S Industries Settings"):
+		return
+
+	try:
+		settings = frappe.get_doc("4S Industries Settings")
+	except frappe.DoesNotExistError:
+		settings = frappe.new_doc("4S Industries Settings")
+
+	if not settings.default_company:
+		company = frappe.defaults.get_global_default("company") or frappe.db.get_value("Company", {}, "name")
+		if company:
+			settings.default_company = company
+
+	settings.flags.ignore_validate = True
+	settings.flags.ignore_permissions = True
+	settings.save(ignore_permissions=True)
+	frappe.db.commit()

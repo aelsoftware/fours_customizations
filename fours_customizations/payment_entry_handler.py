@@ -4,22 +4,34 @@ from erpnext.accounts.party import get_party_account
 from erpnext.accounts.utils import get_outstanding_invoices
 from erpnext.accounts.doctype.payment_entry.payment_entry import get_reference_details
 
+from fours_customizations.fours_customizations.doctype.four_s_industries_settings.four_s_industries_settings import (
+	get_settings,
+)
+
 
 def _is_automation_enabled(company):
 	"""Check if selling automations are enabled for this company."""
 	return frappe.db.get_value("Company", company, "enable_selling_automations")
 
 
-def before_cancel(doc, method=None):
-	"""Allow PE cancellation even when commission JEs link back to it."""
-	if not _is_automation_enabled(doc.company):
+def validate(doc, method=None):
+	"""Require sales_person on incoming payments for the configured company."""
+	try:
+		settings = get_settings()
+	except Exception:
 		return
-
-	if frappe.db.exists("Journal Entry", {
-		"custom_commission_payment_entry": doc.name,
-		"docstatus": 1,
-	}):
-		doc.flags.ignore_links = True
+	if not int(settings.enforce_sales_person_on_payment or 0):
+		return
+	required_company = settings.default_company
+	if not required_company or doc.company != required_company:
+		return
+	if doc.payment_type != "Receive":
+		return
+	if not getattr(doc, "sales_person", None):
+		frappe.throw(
+			f"Sales Person is required on Payment Entries for {required_company}. "
+			"Set it on the form before saving."
+		)
 
 
 def before_submit(doc, method=None):

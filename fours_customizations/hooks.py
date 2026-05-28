@@ -137,7 +137,8 @@ after_migrate = "fours_customizations.install.after_install"
 # Hook on document methods and events
 
 doc_events = {
-    "Delivery Note": {
+	"Delivery Note": {
+		"before_submit": "fours_customizations.delivery_note_handler.before_submit",
 		"on_trash": "fours_customizations.delivery_note_handler.on_trash",
 	},
 	"Salary Slip": {
@@ -148,49 +149,40 @@ doc_events = {
 		"on_submit": "fours_customizations.sales_invoice_handler.on_submit",
 		"before_submit": "fours_customizations.sales_invoice_handler.before_submit",
 		"before_save": "fours_customizations.sales_invoice_handler.before_save",
-		"before_cancel": "fours_customizations.sales_invoice_handler.before_cancel",
-		"on_cancel": "fours_customizations.sales_invoice_handler.on_cancel",
 	},
 	"Sales Order": {
 		"before_submit": "fours_customizations.sales_order_handler.before_submit",
 		"on_submit": "fours_customizations.sales_order_handler.on_submit",
 		"on_cancel": "fours_customizations.sales_order_handler.on_cancel",
 	},
-	"Delivery Note": {
-		"on_trash": "fours_customizations.delivery_note_handler.on_trash",
-	},
 	"Payment Entry": {
+		"validate": "fours_customizations.payment_entry_handler.validate",
 		"before_submit": "fours_customizations.payment_entry_handler.before_submit",
-		"before_cancel": "fours_customizations.payment_entry_handler.before_cancel",
 	},
-	"GL Entry": {
-		"on_submit": "fours_customizations.gl_entry_handler.on_submit",
+	"Landed Cost Voucher": {
+		"on_submit": "fours_customizations.landed_cost_handler.on_submit",
 	},
-	"Unreconcile Payment": {
-		"on_submit": "fours_customizations.gl_entry_handler.on_unreconcile",
+	"Stock Reconciliation": {
+		"on_submit": "fours_customizations.negative_stock_handler.on_stock_reconciliation_submit",
 	},
 }
 
 # Scheduled Tasks
 # ---------------
+# The hourly dispatcher functions each gate themselves against the time
+# configured in "4S Industries Settings" — so the cadence stays user-editable
+# without redeploying the app.
 
-# scheduler_events = {
-# 	"all": [
-# 		"fours_customizations.tasks.all"
-# 	],
-# 	"daily": [
-# 		"fours_customizations.tasks.daily"
-# 	],
-# 	"hourly": [
-# 		"fours_customizations.tasks.hourly"
-# 	],
-# 	"weekly": [
-# 		"fours_customizations.tasks.weekly"
-# 	],
-# 	"monthly": [
-# 		"fours_customizations.tasks.monthly"
-# 	],
-# }
+scheduler_events = {
+	"hourly": [
+		"fours_customizations.attendance_handler.hourly_attendance_dispatcher",
+		"fours_customizations.attendance_notifier.hourly_attendance_notifier",
+		"fours_customizations.negative_stock_handler.hourly_negative_stock_dispatcher",
+	],
+	"daily": [
+		"fours_customizations.payroll_handler.daily_payroll_dispatcher",
+	],
+}
 
 # Testing
 # -------

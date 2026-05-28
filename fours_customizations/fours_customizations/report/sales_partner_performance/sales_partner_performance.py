@@ -120,42 +120,57 @@ def _get_si_data(filters):
 
 
 def _get_je_commission(filters):
-	"""Net commission from commission JEs (matches Accounts Payable).
+	"""Commission earned, computed from GL payment credits and the standard
+	`amount_eligible_for_commission` field on each Sales Invoice.
 
-	Credits on the supplier/creditor account = positive commission.
-	Debits (reversals, credit notes) = negative commission.
+	Formula:
+	    commission = (rate / 100) * eligible * (paid / base_grand_total)
+	summed per Sales Partner across every payment in the window.
 	"""
-	conditions = ""
-	if filters.get("from_date"):
-		conditions += " AND je.posting_date >= %(from_date)s"
-	if filters.get("to_date"):
-		conditions += " AND je.posting_date <= %(to_date)s"
-	if filters.get("company"):
-		conditions += " AND je.company = %(company)s"
-	if filters.get("sales_partner"):
-		conditions += " AND si.sales_partner = %(sales_partner)s"
+	from frappe.utils import flt
 
-	result = frappe.db.sql(
-		"""
+	conditions = ["gle.is_cancelled = 0", "gle.credit > 0", "gle.against_voucher_type = 'Sales Invoice'", "si.docstatus = 1", "si.is_return = 0", "si.sales_partner IS NOT NULL", "si.sales_partner != ''"]
+	if filters.get("from_date"):
+		conditions.append("gle.posting_date >= %(from_date)s")
+	if filters.get("to_date"):
+		conditions.append("gle.posting_date <= %(to_date)s")
+	if filters.get("company"):
+		conditions.append("gle.company = %(company)s")
+	if filters.get("sales_partner"):
+		conditions.append("si.sales_partner = %(sales_partner)s")
+
+	rows = frappe.db.sql(
+		f"""
 		SELECT
 			si.sales_partner,
-			SUM(jea.credit_in_account_currency - jea.debit_in_account_currency) AS net_commission
-		FROM `tabJournal Entry` je
-		INNER JOIN `tabJournal Entry Account` jea
-			ON jea.parent = je.name AND jea.party_type = 'Supplier'
+			si.base_grand_total                          AS invoice_total,
+			COALESCE(si.amount_eligible_for_commission, 0) AS eligible,
+			COALESCE(sp.commission_rate, 0)              AS rate,
+			SUM(gle.credit)                              AS paid
+		FROM `tabGL Entry` gle
 		INNER JOIN `tabSales Invoice` si
-			ON si.name = je.custom_commission_sales_invoice
-		WHERE je.docstatus = 1
-			AND je.custom_commission_sales_invoice IS NOT NULL
-			AND je.custom_commission_sales_invoice != ''
-			{conditions}
-		GROUP BY si.sales_partner
-		""".format(conditions=conditions),
+			ON si.name = gle.against_voucher
+		   AND gle.account = si.debit_to
+		INNER JOIN `tabSales Partner` sp
+			ON sp.name = si.sales_partner
+		WHERE {' AND '.join(conditions)}
+		GROUP BY si.name, si.sales_partner, si.base_grand_total, si.amount_eligible_for_commission, sp.commission_rate
+		""",
 		filters,
 		as_dict=True,
 	)
 
-	return {row.sales_partner: row.net_commission for row in result}
+	totals: dict[str, float] = {}
+	for r in rows:
+		invoice_total = flt(r.invoice_total)
+		eligible = flt(r.eligible)
+		paid = flt(r.paid)
+		rate = flt(r.rate)
+		if invoice_total <= 0 or eligible <= 0 or rate <= 0:
+			continue
+		commission = (rate / 100.0) * eligible * (paid / invoice_total)
+		totals[r.sales_partner] = totals.get(r.sales_partner, 0.0) + commission
+	return totals
 
 
 def _get_recovered_payments(filters):

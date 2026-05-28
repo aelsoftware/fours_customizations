@@ -20,6 +20,18 @@ import frappe
 
 # ── entry point ───────────────────────────────────────────────────────────────
 
+def before_submit(doc, method=None):
+	"""Silently enable negative stock on OOS items so DN submits cleanly (Req #5)."""
+	if not frappe.db.get_value("Company", doc.company, "enable_selling_automations"):
+		return
+	try:
+		from fours_customizations.negative_stock_handler import ensure_negative_stock_for_doc
+
+		ensure_negative_stock_for_doc(doc)
+	except Exception:
+		frappe.log_error(frappe.get_traceback(), "4S DN before_submit: negative stock check failed")
+
+
 def on_trash(doc, method=None):
 	"""Fired when a Delivery Note document is permanently deleted."""
 	company = doc.company

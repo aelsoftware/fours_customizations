@@ -1,218 +1,97 @@
+"""
+Sales Partner Commission Ledger — payment-based view.
+
+Shows every receivable-account credit posted against a Sales Invoice that
+carries a Sales Partner, with the commission earned for that specific
+payment computed using:
+
+    commission = (rate / 100)
+                 * amount_eligible_for_commission
+                 * (credit / base_grand_total)
+
+This replaces the old JE-based ledger now that commission is no longer
+booked per payment.  The "Journal Entry" column has been replaced with
+"Payment Voucher" — i.e. the Payment Entry / Journal Entry that triggered
+the credit.
+"""
+
 import frappe
 from frappe import _
 from frappe.utils import flt
 
 
 def execute(filters=None):
-	columns = get_columns()
-	data = get_data(filters)
-	return columns, data
+	filters = filters or {}
+	return get_columns(), get_data(filters)
 
 
 def get_columns():
 	return [
-		{
-			"label": _("Date"),
-			"fieldname": "posting_date",
-			"fieldtype": "Date",
-			"width": 110,
-		},
-		{
-			"label": _("Sales Partner"),
-			"fieldname": "sales_partner",
-			"fieldtype": "Link",
-			"options": "Sales Partner",
-			"width": 160,
-		},
-		{
-			"label": _("Commission Amount"),
-			"fieldname": "commission_amount",
-			"fieldtype": "Currency",
-			"width": 150,
-		},
-		{
-			"label": _("Type"),
-			"fieldname": "entry_type",
-			"fieldtype": "Data",
-			"width": 120,
-		},
-		{
-			"label": _("Journal Entry"),
-			"fieldname": "journal_entry",
-			"fieldtype": "Link",
-			"options": "Journal Entry",
-			"width": 160,
-		},
-		{
-			"label": _("Sales Invoice"),
-			"fieldname": "sales_invoice",
-			"fieldtype": "Link",
-			"options": "Sales Invoice",
-			"width": 160,
-		},
-		{
-			"label": _("SI Date"),
-			"fieldname": "si_date",
-			"fieldtype": "Date",
-			"width": 110,
-		},
-		{
-			"label": _("Payment Entry"),
-			"fieldname": "payment_entry",
-			"fieldtype": "Link",
-			"options": "Payment Entry",
-			"width": 160,
-		},
-		{
-			"label": _("PE Date"),
-			"fieldname": "pe_date",
-			"fieldtype": "Date",
-			"width": 110,
-		},
-		{
-			"label": _("Remarks"),
-			"fieldname": "remarks",
-			"fieldtype": "Data",
-			"width": 300,
-		},
+		{"label": _("Posting Date"), "fieldname": "posting_date", "fieldtype": "Date", "width": 110},
+		{"label": _("Sales Partner"), "fieldname": "sales_partner", "fieldtype": "Link", "options": "Sales Partner", "width": 160},
+		{"label": _("Sales Invoice"), "fieldname": "sales_invoice", "fieldtype": "Link", "options": "Sales Invoice", "width": 160},
+		{"label": _("SI Date"), "fieldname": "si_date", "fieldtype": "Date", "width": 110},
+		{"label": _("Invoice Total"), "fieldname": "invoice_total", "fieldtype": "Currency", "width": 130},
+		{"label": _("Eligible Amount"), "fieldname": "eligible_amount", "fieldtype": "Currency", "width": 130},
+		{"label": _("Paid"), "fieldname": "paid", "fieldtype": "Currency", "width": 120},
+		{"label": _("Rate %"), "fieldname": "rate", "fieldtype": "Float", "width": 80, "precision": 4},
+		{"label": _("Commission"), "fieldname": "commission", "fieldtype": "Currency", "width": 130},
+		{"label": _("Payment Voucher"), "fieldname": "payment_voucher", "fieldtype": "Dynamic Link", "options": "payment_voucher_type", "width": 160},
+		{"label": _("Voucher Type"), "fieldname": "payment_voucher_type", "fieldtype": "Data", "width": 120},
 	]
 
 
 def get_data(filters):
-	conditions = ""
+	conditions = ["gle.is_cancelled = 0", "gle.credit > 0", "gle.against_voucher_type = 'Sales Invoice'", "si.docstatus = 1", "si.is_return = 0", "si.sales_partner IS NOT NULL", "si.sales_partner != ''"]
+	params: dict = {}
 	if filters.get("from_date"):
-		conditions += " AND je.posting_date >= %(from_date)s"
+		conditions.append("gle.posting_date >= %(from_date)s")
+		params["from_date"] = filters["from_date"]
 	if filters.get("to_date"):
-		conditions += " AND je.posting_date <= %(to_date)s"
+		conditions.append("gle.posting_date <= %(to_date)s")
+		params["to_date"] = filters["to_date"]
 	if filters.get("company"):
-		conditions += " AND je.company = %(company)s"
+		conditions.append("gle.company = %(company)s")
+		params["company"] = filters["company"]
+	if filters.get("sales_partner"):
+		conditions.append("si.sales_partner = %(sales_partner)s")
+		params["sales_partner"] = filters["sales_partner"]
 
-	# Fetch all commission JEs (both original and reversals)
-	journal_entries = frappe.db.sql(
-		"""
+	rows = frappe.db.sql(
+		f"""
 		SELECT
-			je.name,
-			je.posting_date,
-			je.custom_commission_sales_invoice,
-			je.custom_commission_payment_entry,
-			je.custom_commission_voucher_no,
-			je.user_remark
-		FROM `tabJournal Entry` je
-		WHERE je.docstatus = 1
-			AND je.custom_commission_sales_invoice IS NOT NULL
-			AND je.custom_commission_sales_invoice != ''
-			{conditions}
-		ORDER BY je.posting_date, je.name
-		""".format(conditions=conditions),
-		filters,
-		as_dict=True,
-	)
-
-	if not journal_entries:
-		return []
-
-	# Collect all SI and PE names for batch lookup
-	si_names = set()
-	pe_names = set()
-	for je in journal_entries:
-		if je.custom_commission_sales_invoice:
-			si_names.add(je.custom_commission_sales_invoice)
-		if je.custom_commission_payment_entry:
-			pe_names.add(je.custom_commission_payment_entry)
-
-	# Batch fetch SI details
-	si_map = {}
-	if si_names:
-		si_data = frappe.db.sql(
-			"""
-			SELECT name, posting_date, sales_partner, is_return
-			FROM `tabSales Invoice`
-			WHERE name IN %s
-			""",
-			[list(si_names)],
-			as_dict=True,
-		)
-		si_map = {s.name: s for s in si_data}
-
-	# Batch fetch PE dates
-	pe_map = {}
-	if pe_names:
-		pe_data = frappe.db.sql(
-			"""
-			SELECT name, posting_date
-			FROM `tabPayment Entry`
-			WHERE name IN %s
-			""",
-			[list(pe_names)],
-			as_dict=True,
-		)
-		pe_map = {p.name: p for p in pe_data}
-
-	# Get commission amounts from JE account rows
-	je_names = [je.name for je in journal_entries]
-	account_rows = frappe.db.sql(
-		"""
-		SELECT
-			parent,
-			debit_in_account_currency,
-			credit_in_account_currency
-		FROM `tabJournal Entry Account`
-		WHERE parent IN %s
-			AND debit_in_account_currency > 0
-		ORDER BY parent
+			gle.posting_date,
+			gle.credit                              AS paid,
+			gle.voucher_type                        AS payment_voucher_type,
+			gle.voucher_no                          AS payment_voucher,
+			si.name                                 AS sales_invoice,
+			si.posting_date                         AS si_date,
+			si.sales_partner                        AS sales_partner,
+			si.base_grand_total                     AS invoice_total,
+			COALESCE(si.amount_eligible_for_commission, 0) AS eligible_amount,
+			COALESCE(sp.commission_rate, 0)         AS rate
+		FROM `tabGL Entry` gle
+		INNER JOIN `tabSales Invoice` si
+			ON si.name = gle.against_voucher
+		   AND gle.account = si.debit_to
+		INNER JOIN `tabSales Partner` sp
+			ON sp.name = si.sales_partner
+		WHERE {' AND '.join(conditions)}
+		ORDER BY gle.posting_date, gle.voucher_no
 		""",
-		[je_names],
+		params,
 		as_dict=True,
 	)
-	# Map JE name → first debit amount (the commission/reversal amount)
-	je_debit_map = {}
-	for row in account_rows:
-		if row.parent not in je_debit_map:
-			je_debit_map[row.parent] = flt(row.debit_in_account_currency)
-
-	# Filter by sales partner if specified
-	partner_filter = filters.get("sales_partner")
 
 	data = []
-	for je in journal_entries:
-		si_name = je.custom_commission_sales_invoice
-		pe_name = je.custom_commission_payment_entry
-		voucher_no = je.custom_commission_voucher_no or ""
-
-		si_info = si_map.get(si_name, {})
-		pe_info = pe_map.get(pe_name, {})
-
-		sales_partner = si_info.get("sales_partner", "")
-		if partner_filter and sales_partner != partner_filter:
-			continue
-
-		# Determine type and sign
-		is_reversal = voucher_no.startswith("REV-")
-		is_credit_note = si_info.get("is_return", 0)
-
-		debit_amount = je_debit_map.get(je.name, 0)
-
-		if is_reversal:
-			entry_type = "Reversal"
-			commission_amount = -1 * debit_amount
-		elif is_credit_note:
-			entry_type = "Credit Note"
-			commission_amount = -1 * debit_amount
-		else:
-			entry_type = "Commission"
-			commission_amount = debit_amount
-
-		data.append({
-			"posting_date": je.posting_date,
-			"sales_partner": sales_partner,
-			"commission_amount": commission_amount,
-			"entry_type": entry_type,
-			"journal_entry": je.name,
-			"sales_invoice": si_name,
-			"si_date": si_info.get("posting_date"),
-			"payment_entry": pe_name,
-			"pe_date": pe_info.get("posting_date"),
-			"remarks": je.user_remark,
-		})
-
+	for r in rows:
+		invoice_total = flt(r.invoice_total)
+		eligible = flt(r.eligible_amount)
+		paid = flt(r.paid)
+		rate = flt(r.rate)
+		commission = 0.0
+		if invoice_total > 0 and eligible > 0 and rate > 0:
+			commission = flt((rate / 100.0) * eligible * (paid / invoice_total), 2)
+		r["commission"] = commission
+		data.append(r)
 	return data

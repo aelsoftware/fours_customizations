@@ -1,259 +1,103 @@
-from pydoc import doc
+"""
+Sales Invoice Handler — Fours Customizations.
+
+After the salary-slip-only commission redesign, this module no longer books
+any commission Journal Entries.  Its responsibilities are now:
+
+  before_submit  → silently enable negative stock for OOS items
+  before_save    → POS guards (warehouse, update_stock=0, advance allocation)
+                   + draft Delivery Note check on returns
+  on_submit      → create the draft Delivery Note, then auto-create + submit
+                   a Sales Order for stock reservation (Req #1)
+
+Commission earnings are computed in `salary_slip_handler.py` from GL Entries
+and added straight to the Salary Slip.
+"""
 
 import frappe
 from frappe.utils import flt
 from frappe.model.mapper import get_mapped_doc
-from erpnext.accounts.party import get_party_account
+
+from fours_customizations.fours_customizations.doctype.four_s_industries_settings.four_s_industries_settings import (
+        get_setting,
+)
 
 
 def _is_automation_enabled(company):
         """Check if selling automations are enabled for this company."""
         return frappe.db.get_value("Company", company, "enable_selling_automations")
 
+
+def _default_pos_warehouse():
+        """POS warehouse — used to override is_pos auto-set behaviour."""
+        return get_setting("default_warehouse")
+
+
 def before_submit(doc, method=None):
-    doc.update_outstanding_for_self = 0
-    
+        doc.update_outstanding_for_self = 0
+        # Silently enable negative stock on items that would otherwise block.
+        if _is_automation_enabled(doc.company) and not doc.is_return:
+                try:
+                        from fours_customizations.negative_stock_handler import ensure_negative_stock_for_doc
+
+                        ensure_negative_stock_for_doc(doc)
+                except Exception:
+                        frappe.log_error(frappe.get_traceback(), "4S SI before_submit: negative stock check failed")
+
+
 def before_save(doc, method=None):
-    """Auto-enable advance allocation and prevent Include Payment from forcing update_stock on."""
-    if _is_automation_enabled(doc.company):
-        doc.allocate_advances_automatically = 1
-        # ERPNext auto-sets update_stock=1 when Include Payment (is_pos) is enabled.
-        # Override that: disable update_stock and set warehouse so the auto-created
-        # Delivery Note (on_submit) picks up the correct warehouse for its items.
-        if doc.is_pos:
-            doc.update_stock = 0
-            doc.set_posting_time = 1
-            doc.set_warehouse = "Main Store - 4S"
-            for item in doc.items:
-                item.warehouse = "Main Store - 4S"
+        """Auto-enable advance allocation and prevent Include Payment from forcing update_stock on."""
+        if _is_automation_enabled(doc.company):
+                doc.allocate_advances_automatically = 1
+                if doc.is_pos:
+                        doc.update_stock = 0
+                        doc.set_posting_time = 1
+                        pos_warehouse = _default_pos_warehouse()
+                        if pos_warehouse:
+                                doc.set_warehouse = pos_warehouse
+                                for item in doc.items:
+                                        item.warehouse = pos_warehouse
 
-    doc.update_outstanding_for_self = 0
-    if doc.is_return or doc.return_against:
-        dn_parents = frappe.get_all(
-            "Delivery Note Item",
-            filters={
-                "against_sales_invoice": doc.return_against
-            },
-            pluck="parent"
-        )
+        doc.update_outstanding_for_self = 0
 
-        if not dn_parents:
-            return
+        if doc.is_return or doc.return_against:
+                dn_parents = frappe.get_all(
+                        "Delivery Note Item",
+                        filters={"against_sales_invoice": doc.return_against},
+                        pluck="parent",
+                )
+                if not dn_parents:
+                        return
 
-        draft_dn = frappe.db.get_value(
-            "Delivery Note",
-            {
-                "docstatus": 0,
-                "name": ["in", dn_parents]
-            },
-            "name",
-        )
+                draft_dn = frappe.db.get_value(
+                        "Delivery Note",
+                        {"docstatus": 0, "name": ["in", dn_parents]},
+                        "name",
+                )
+                if draft_dn:
+                        full_name = frappe.db.get_value("User", frappe.session.user, "full_name") or "User"
+                        name_parts = full_name.strip().split()
+                        last_name = name_parts[-1] if len(name_parts) > 1 else full_name
+                        frappe.throw(
+                                f"{last_name} you make a cancellation request instead. Delivery Note {draft_dn} is still in draft."
+                        )
 
-        if draft_dn:
-            full_name = frappe.db.get_value("User", frappe.session.user, "full_name") or "User"
-            # Split and get last name
-            name_parts = full_name.strip().split()
-            last_name = name_parts[-1] if len(name_parts) > 1 else full_name
-
-            frappe.throw(
-                f"{last_name} you make a cancellation request instead. Delivery Note {draft_dn} is still in draft."
-            )
 
 def on_submit(doc, method=None):
-        """Create draft Delivery Note and handle advance/credit note commission on submit."""
+        """Create draft Delivery Note and auto Sales Order on submit."""
         if not _is_automation_enabled(doc.company):
                 return
 
         _create_draft_delivery_note(doc)
 
-        if doc.is_return:
-                _create_credit_note_commission(doc)
-                return
+        # Req #1: spawn a Sales Order so ERPNext reserves stock against the warehouse.
+        if not doc.is_return:
+                try:
+                        from fours_customizations.si_to_so import create_sales_order_for_invoice
 
-        _create_advance_commission(doc)
-
-
-def before_cancel(doc, method=None):
-        """Allow SI cancellation even when commission JEs link back to it."""
-        if not _is_automation_enabled(doc.company):
-                return
-
-        if frappe.db.exists("Journal Entry", {
-                "custom_commission_sales_invoice": doc.name,
-                "docstatus": 1,
-        }):
-                doc.flags.ignore_links = True
-
-
-def on_cancel(doc, method=None):
-        """Create reversal JEs for all commission JEs linked to this Sales Invoice."""
-        if not _is_automation_enabled(doc.company):
-                return
-
-        from fours_customizations.gl_entry_handler import _create_reversal_je
-
-        commission_jes = frappe.get_all("Journal Entry", filters={
-                "custom_commission_sales_invoice": doc.name,
-                "docstatus": 1,
-                "custom_commission_voucher_no": ["not like", "REV-%"],
-        }, pluck="name")
-
-        for je_name in commission_jes:
-                _create_reversal_je(je_name, reason=f"invoice {doc.name} cancelled")
-
-
-def _create_credit_note_commission(doc):
-        """Create a negative commission JE when a credit note (return SI) is submitted.
-
-        Reduces the sales partner's commission since goods were returned.
-        Normal commission: Dr Expense / Cr Creditors
-        Credit note:       Dr Creditors / Cr Expense (opposite)
-        """
-        if not doc.sales_partner or flt(doc.total_commission) >= 0:
-                return
-
-        commission = abs(flt(doc.total_commission, 2))
-        if commission <= 0:
-                return
-
-        # Duplicate prevention
-        if frappe.db.exists("Journal Entry", {
-                "custom_commission_voucher_no": doc.name,
-                "custom_commission_sales_invoice": doc.name,
-                "docstatus": ["!=", 2],
-        }):
-                return
-
-        supplier = frappe.db.get_value("Sales Partner", doc.sales_partner, "custom_supplier_account")
-        if not supplier:
-                frappe.msgprint(
-                        f"Sales Partner {doc.sales_partner} has no linked Supplier (custom_supplier_account). "
-                        "Skipping commission Journal Entry.",
-                        alert=True,
-                )
-                return
-
-        expense_account = frappe.db.get_value(
-                "Company", doc.company, "sales_commission_expense_account"
-        )
-        if not expense_account:
-                frappe.throw(
-                        f"Please configure the Sales Commission Expense Account on the Selling Automations tab "
-                        f"in Company {doc.company} before submitting."
-                )
-
-        creditors_account = get_party_account("Supplier", supplier, doc.company)
-        cost_center = doc.cost_center or frappe.get_cached_value("Company", doc.company, "cost_center")
-
-        original_si = doc.return_against or ""
-
-        je = frappe.get_doc({
-                "doctype": "Journal Entry",
-                "voucher_type": "Journal Entry",
-                "posting_date": doc.posting_date,
-                "company": doc.company,
-                "user_remark": f"Commission reduction for credit note {doc.name} against {original_si}",
-                "custom_commission_sales_invoice": doc.name,
-                "custom_commission_voucher_no": doc.name,
-                "accounts": [
-                        {
-                                "account": creditors_account,
-                                "debit_in_account_currency": commission,
-                                "party_type": "Supplier",
-                                "party": supplier,
-                        },
-                        {
-                                "account": expense_account,
-                                "credit_in_account_currency": commission,
-                                "cost_center": cost_center,
-                        },
-                ],
-        })
-        je.insert(ignore_permissions=True)
-        je.submit()
-
-        frappe.msgprint(
-                f"Commission reduction Journal Entry {je.name} created for credit note {doc.name} ({commission:,.2f}).",
-                alert=True,
-        )
-
-
-def _create_advance_commission(doc):
-        """Create commission JEs for advance payments allocated to this SI."""
-        if not doc.sales_partner or flt(doc.total_commission) <= 0:
-                return
-
-        if flt(doc.base_grand_total) <= 0:
-                return
-
-        for advance in doc.advances:
-                if flt(advance.allocated_amount) <= 0:
-                        continue
-
-                voucher_no = advance.reference_name
-
-                # Duplicate prevention
-                if frappe.db.exists("Journal Entry", {
-                        "custom_commission_voucher_no": voucher_no,
-                        "custom_commission_sales_invoice": doc.name,
-                        "docstatus": ["!=", 2],
-                }):
-                        continue
-
-                paid_ratio = min(flt(advance.allocated_amount) / flt(doc.base_grand_total), 1.0)
-                commission = flt(paid_ratio * flt(doc.total_commission), 2)
-
-                if commission <= 0:
-                        continue
-
-                supplier = frappe.db.get_value("Sales Partner", doc.sales_partner, "custom_supplier_account")
-                if not supplier:
-                        frappe.msgprint(
-                                f"Sales Partner {doc.sales_partner} has no linked Supplier (custom_supplier_account). "
-                                "Skipping commission Journal Entry.",
-                                alert=True,
-                        )
-                        return
-
-                expense_account = frappe.db.get_value(
-                        "Company", doc.company, "sales_commission_expense_account"
-                )
-                if not expense_account:
-                        frappe.throw(
-                                f"Please configure the Sales Commission Expense Account on the Selling Automations tab "
-                                f"in Company {doc.company} before submitting."
-                        )
-
-                creditors_account = get_party_account("Supplier", supplier, doc.company)
-                cost_center = doc.cost_center or frappe.get_cached_value("Company", doc.company, "cost_center")
-
-                je = frappe.get_doc({
-                        "doctype": "Journal Entry",
-                        "voucher_type": "Journal Entry",
-                        "posting_date": doc.posting_date,
-                        "company": doc.company,
-                        "user_remark": f"Commission for {voucher_no} (advance) allocation to {doc.name}",
-                        "custom_commission_payment_entry": voucher_no if advance.reference_type == "Payment Entry" else None,
-                        "custom_commission_sales_invoice": doc.name,
-                        "custom_commission_voucher_no": voucher_no,
-                        "accounts": [
-                                {
-                                        "account": expense_account,
-                                        "debit_in_account_currency": commission,
-                                        "cost_center": cost_center,
-                                },
-                                {
-                                        "account": creditors_account,
-                                        "credit_in_account_currency": commission,
-                                        "party_type": "Supplier",
-                                        "party": supplier,
-                                },
-                        ],
-                })
-                je.insert(ignore_permissions=True)
-                je.submit()
-
-                frappe.msgprint(f"Commission Journal Entry {je.name} created for advance on {doc.name}.", alert=True)
+                        create_sales_order_for_invoice(doc)
+                except Exception:
+                        frappe.log_error(frappe.get_traceback(), "4S SI on_submit: SO creation failed")
 
 
 def _create_draft_delivery_note(doc):
@@ -284,9 +128,9 @@ def _create_draft_delivery_note(doc):
         if not stock_item_codes:
                 return
 
-        if doc.is_return:    
-            _create_draft_delivery_note_return(doc, stock_item_codes)
-            return
+        if doc.is_return:
+                _create_draft_delivery_note_return(doc, stock_item_codes)
+                return
 
         # Normal invoice flow
         has_eligible_items = any(
@@ -352,8 +196,6 @@ def _create_draft_delivery_note(doc):
 
         if dn and dn.items:
                 dn.set_posting_time = 1
-
-                # Copy from Sales Invoice
                 dn.posting_date = doc.posting_date
                 dn.posting_time = doc.posting_time
                 dn.insert(ignore_permissions=True)
@@ -365,14 +207,13 @@ def _create_draft_delivery_note_return(doc, stock_item_codes):
         if not doc.return_against:
                 return
 
-        # prevent duplicate draft DN return for the same SI return
         existing_dn = frappe.db.get_value(
                 "Delivery Note",
                 {
                         "docstatus": 0,
                         "is_return": 1,
                         "return_against": ["is", "set"],
-                        "custom_remarks": ["like", f"%Auto-created from Sales Invoice Return {doc.name}%"]
+                        "custom_remarks": ["like", f"%Auto-created from Sales Invoice Return {doc.name}%"],
                 },
                 "name",
         )
@@ -412,7 +253,7 @@ def _create_draft_delivery_note_return(doc, stock_item_codes):
                         "uom",
                         "stock_uom",
                         "conversion_factor",
-                    ],
+                ],
         )
 
         if not dn_items:
