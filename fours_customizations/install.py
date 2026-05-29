@@ -206,7 +206,7 @@ def create_payment_entry_custom_fields():
 				"label": "Sales Person",
 				"fieldtype": "Link",
 				"options": "Sales Person",
-				"insert_after": "reference_no",
+				"insert_after": "payment_type",
 				"description": "Sales Person who collected this payment. Drives commission for their Salary Slip.",
 			},
 		],
