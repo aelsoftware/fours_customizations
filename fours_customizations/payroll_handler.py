@@ -95,20 +95,96 @@ def create_monthly_payroll_entry(settings=None, run_date=None, start=None, end=N
 		frappe.log_error("4S Payroll: no company configured", "4S Payroll")
 		return {"error": "no company"}
 
-	if frappe.db.exists(
-		"Payroll Entry",
-		{"company": company, "start_date": start, "end_date": end, "docstatus": ("!=", 2)},
-	):
-		return {"skipped": True, "reason": "payroll entry exists"}
+	# Group employees by the Payroll Payable Account on their latest,
+	# period-effective Salary Structure Assignment, then create one Payroll
+	# Entry per payable account. ERPNext requires a single payable account per
+	# Payroll Entry (it is mandatory), so a company whose employees book to
+	# several payable accounts needs one entry each.
+	emp_to_account = _employee_payable_accounts(company, end)
+	if not emp_to_account:
+		frappe.log_error(
+			f"4S Payroll: no submitted Salary Structure Assignments with a "
+			f"Payroll Payable Account for {company} effective on/before {end}",
+			"4S Payroll",
+		)
+		return {"error": "no payable accounts"}
 
+	created, skipped = [], []
+	for account in sorted(set(emp_to_account.values())):
+		if frappe.db.exists(
+			"Payroll Entry",
+			{
+				"company": company,
+				"start_date": start,
+				"end_date": end,
+				"payroll_payable_account": account,
+				"docstatus": ("!=", 2),
+			},
+		):
+			skipped.append(account)
+			continue
+
+		pe_name = _create_payroll_entry_for_account(
+			company, run_date, start, end, account, emp_to_account
+		)
+		if pe_name:
+			created.append(pe_name)
+
+	if not created:
+		return {"created": [], "skipped_existing": skipped}
+
+	excel = build_payroll_excel(created)
+	_send_payroll_email(settings, created, start, end, excel)
+
+	return {"created": created, "skipped_existing": skipped}
+
+
+def _employee_payable_accounts(company, period_end) -> dict:
+	"""Map each employee to the Payroll Payable Account on their latest
+	period-effective Salary Structure Assignment for *company*.
+
+	Only submitted assignments dated on/before *period_end* count; when an
+	employee has several, the one with the most recent ``from_date`` wins.
+	Assignments without a payable account are ignored.
+	"""
+	rows = frappe.get_all(
+		"Salary Structure Assignment",
+		filters={
+			"company": company,
+			"docstatus": 1,
+			"from_date": ["<=", period_end],
+		},
+		fields=["employee", "payroll_payable_account", "from_date"],
+		order_by="from_date asc",
+	)
+
+	emp_to_account: dict[str, str] = {}
+	for row in rows:
+		if not row.payroll_payable_account:
+			continue
+		# Ascending order → later assignments overwrite earlier ones (latest wins).
+		emp_to_account[row.employee] = row.payroll_payable_account
+	return emp_to_account
+
+
+def _create_payroll_entry_for_account(company, run_date, start, end, account, emp_to_account):
+	"""Create, populate and submit one Payroll Entry for a single payable account.
+
+	Employees are pulled through ERPNext's standard eligibility logic, then
+	narrowed to those whose effective assignment books to *account*. Returns the
+	Payroll Entry name, or ``None`` when no eligible employee belongs to it.
+	"""
 	pe = frappe.new_doc("Payroll Entry")
 	pe.company = company
 	pe.posting_date = run_date
 	pe.payroll_frequency = "Monthly"
 	pe.start_date = start
 	pe.end_date = end
+	# Set before filling so ERPNext's set_payroll_payable_account() leaves it as-is.
+	pe.payroll_payable_account = account
 	pe.exchange_rate = 1
 	pe.flags.ignore_permissions = True
+
 	try:
 		pe.fill_employee_details()
 	except Exception:
@@ -118,43 +194,55 @@ def create_monthly_payroll_entry(settings=None, run_date=None, start=None, end=N
 		except Exception:
 			frappe.log_error(frappe.get_traceback(), "4S Payroll: fill employees failed")
 
+	# Keep only the employees that book to this payable account.
+	keep = [row for row in (pe.employees or []) if emp_to_account.get(row.employee) == account]
+	if not keep:
+		return None
+	pe.set("employees", keep)
+	pe.number_of_employees = len(keep)
+	# Re-assert in case fill_employee_details adjusted it.
+	pe.payroll_payable_account = account
+
 	pe.insert(ignore_permissions=True)
 
-	# Try to create salary slips. Failures here shouldn't kill the email step.
+	# Creating + submitting salary slips can fail per-run; don't let it abort the
+	# remaining accounts or the summary email.
 	try:
 		pe.submit()
 	except Exception:
-		frappe.log_error(frappe.get_traceback(), "4S Payroll: submit failed (continuing)")
+		frappe.log_error(frappe.get_traceback(), f"4S Payroll: submit failed for {pe.name} (continuing)")
 
-	excel = build_payroll_excel(pe.name)
-	_send_payroll_email(settings, pe, excel)
-
-	return {"created": pe.name}
+	return pe.name
 
 
-def build_payroll_excel(payroll_entry: str) -> bytes:
-	"""Build a one-sheet Excel file with one row per Salary Slip in the run."""
+def build_payroll_excel(payroll_entries) -> bytes:
+	"""Build a one-sheet Excel file with one row per Salary Slip across the
+	given Payroll Entry (or list of Payroll Entries)."""
 	import openpyxl
 
-	pe = frappe.get_doc("Payroll Entry", payroll_entry)
+	if isinstance(payroll_entries, str):
+		payroll_entries = [payroll_entries]
+
 	slips = frappe.get_all(
 		"Salary Slip",
-		filters={"payroll_entry": payroll_entry},
+		filters={"payroll_entry": ["in", payroll_entries]},
 		fields=[
 			"name", "employee", "employee_name", "department", "designation",
 			"gross_pay", "total_deduction", "net_pay", "bank_account_no", "bank_name",
+			"payroll_entry",
 		],
 		order_by="employee_name",
 	)
 
 	wb = openpyxl.Workbook()
 	ws = wb.active
-	ws.title = f"Payroll {pe.end_date}"
+	ws.title = "Payroll"
 
 	headers = [
 		"Employee", "Employee Name", "Department", "Designation",
 		"Bank", "Account No.",
 		"Gross Pay", "Total Deductions", "Net Pay",
+		"Payroll Entry",
 	]
 	ws.append(headers)
 
@@ -174,13 +262,14 @@ def build_payroll_excel(payroll_entry: str) -> bytes:
 			flt(slip.gross_pay),
 			flt(slip.total_deduction),
 			flt(slip.net_pay),
+			slip.payroll_entry or "",
 		])
 		total_gross += flt(slip.gross_pay)
 		total_deductions += flt(slip.total_deduction)
 		total_net += flt(slip.net_pay)
 
 	ws.append([])
-	ws.append(["TOTAL", "", "", "", "", "", total_gross, total_deductions, total_net])
+	ws.append(["TOTAL", "", "", "", "", "", total_gross, total_deductions, total_net, ""])
 	for c in ws[ws.max_row]:
 		c.font = openpyxl.styles.Font(bold=True)
 
@@ -195,23 +284,25 @@ def build_payroll_excel(payroll_entry: str) -> bytes:
 	return buf.getvalue()
 
 
-def _send_payroll_email(settings, pe, excel_bytes: bytes) -> None:
+def _send_payroll_email(settings, payroll_entries, start, end, excel_bytes: bytes) -> None:
 	to = settings.boss_email
 	if not to:
 		frappe.log_error("4S Payroll: boss_email not configured", "4S Payroll")
 		return
-	subject = f"Payroll Run — {pe.end_date}"
+	if isinstance(payroll_entries, str):
+		payroll_entries = [payroll_entries]
+	subject = f"Payroll Run — {end}"
+	pe_items = "".join(f"<li><b>{name}</b></li>" for name in payroll_entries)
 	body = f"""
 <p>Dear Sir / Madam,</p>
-<p>Attached is the payroll run for the month ending <b>{pe.end_date}</b>.</p>
+<p>Attached is the payroll run for the period <b>{start}</b> to <b>{end}</b>.</p>
+<p>The following Payroll Entries were created (one per Payroll Payable Account):</p>
 <ul>
-  <li>Payroll Entry: <b>{pe.name}</b></li>
-  <li>Start: {pe.start_date}</li>
-  <li>End: {pe.end_date}</li>
+  {pe_items}
 </ul>
 <p>Please review and approve in ERPNext.</p>
 """
-	filename = f"payroll-{pe.end_date}.xlsx"
+	filename = f"payroll-{end}.xlsx"
 	send_email(
 		subject=subject,
 		message=body,

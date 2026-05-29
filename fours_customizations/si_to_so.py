@@ -83,7 +83,11 @@ def create_sales_order_for_invoice(si) -> str | None:
 	so.total_commission = flt(si.total_commission)
 	so.letter_head = si.letter_head
 	so.custom_source_sales_invoice = si.name
-	so.reserve_stock = 1
+	# Reserve stock AFTER submit (see _reserve_stock_best_effort below). Auto
+	# -reserving during submit crashes on some ERPNext builds for hand-built
+	# orders ('SalesOrderItem' has no attribute 'parent_detail_docname'), so we
+	# keep reservation off the critical submit path.
+	so.reserve_stock = 0
 
 	# Keep Sales Invoice Item names aligned with the Sales Order Items we append,
 	# so the native sales_order / so_detail links can be wired after insert.
@@ -106,7 +110,8 @@ def create_sales_order_for_invoice(si) -> str | None:
 			"warehouse": item.warehouse or so.set_warehouse,
 			"cost_center": item.cost_center or so.cost_center,
 			"delivery_date": delivery_date,
-			"reserve_stock": 1,
+			# Turned on post-submit by _reserve_stock_best_effort.
+			"reserve_stock": 0,
 		})
 		si_item_names.append(item.name)
 
@@ -149,6 +154,9 @@ def create_sales_order_for_invoice(si) -> str | None:
 		frappe.log_error(frappe.get_traceback(), f"4S SI->SO: submit failed for {so.name}")
 		# Leave the SO as draft so the user can review
 		return so.name
+
+	# Reserve stock now that the order is safely submitted — best-effort only.
+	_reserve_stock_best_effort(so)
 
 	# Legacy convenience pointer on the invoice header. The authoritative links
 	# are the native sales_order / so_detail fields set in _apply_native_links;
@@ -216,3 +224,35 @@ def _apply_native_links(si, so, si_item_names: list[str]) -> None:
 				{"against_sales_order": so.name, "so_detail": so_item_name},
 				update_modified=False,
 			)
+
+
+def _reserve_stock_best_effort(so) -> None:
+	"""Reserve stock for a freshly-submitted Sales Order without ever raising.
+
+	The order is submitted with reservation turned off so submit can't crash;
+	here we flip ``reserve_stock`` back on and let ERPNext create the Stock
+	Reservation Entries. Any failure (including the build-specific
+	'parent_detail_docname' error) is logged and swallowed — the submitted,
+	interlinked Sales Order is the part that matters; reservation is a bonus.
+	"""
+	try:
+		frappe.db.set_value("Sales Order", so.name, "reserve_stock", 1, update_modified=False)
+		for item in so.items:
+			if item.item_code:
+				frappe.db.set_value(
+					"Sales Order Item", item.name, "reserve_stock", 1, update_modified=False
+				)
+		so.reload()
+
+		if hasattr(so, "create_stock_reservation_entries"):
+			so.create_stock_reservation_entries()
+		else:
+			from erpnext.stock.doctype.stock_reservation_entry.stock_reservation_entry import (
+				create_stock_reservation_entries_for_so_items,
+			)
+			create_stock_reservation_entries_for_so_items(so)
+	except Exception:
+		frappe.log_error(
+			frappe.get_traceback(),
+			f"4S SI->SO: post-submit stock reservation skipped for {getattr(so, 'name', '?')}",
+		)
