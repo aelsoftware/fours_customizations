@@ -191,6 +191,14 @@ scheduler_events = {
 
 # Overriding Methods
 # ------------------------------
+
+# Fast-track cancellation requests on Sales Invoices whose Delivery Note is
+# still in draft (delete the DN + auto-cancel the invoice). All other cases
+# fall through to the original cancellation_requests behaviour.
+override_whitelisted_methods = {
+	"cancellation_requests.api.request_cancellation": "fours_customizations.cancellation_override.request_cancellation",
+}
+
 #
 # override_whitelisted_methods = {
 # 	"frappe.desk.doctype.event.event.get_events": "fours_customizations.event.get_events"

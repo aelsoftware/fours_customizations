@@ -197,7 +197,10 @@ def on_submit(doc, method=None):
 	if not _automation_enabled(doc.company):
 		return
 
-	_create_delivery_note(doc)
+	# When this Sales Order was auto-created from a Sales Invoice, the invoice
+	# flow already owns the (single) Delivery Note — skip the duplicate here.
+	if not doc.flags.get("skip_auto_delivery_note"):
+		_create_delivery_note(doc)
 
 	if flt(doc.custom_include_payment):
 		_validate_payments(doc)

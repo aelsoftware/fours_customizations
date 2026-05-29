@@ -85,6 +85,9 @@ def create_sales_order_for_invoice(si) -> str | None:
 	so.custom_source_sales_invoice = si.name
 	so.reserve_stock = 1
 
+	# Keep Sales Invoice Item names aligned with the Sales Order Items we append,
+	# so the native sales_order / so_detail links can be wired after insert.
+	si_item_names: list[str] = []
 	for item in si.items:
 		if item.item_code not in stock_items:
 			continue
@@ -105,6 +108,7 @@ def create_sales_order_for_invoice(si) -> str | None:
 			"delivery_date": delivery_date,
 			"reserve_stock": 1,
 		})
+		si_item_names.append(item.name)
 
 	if not so.items:
 		return None
@@ -125,11 +129,19 @@ def create_sales_order_for_invoice(si) -> str | None:
 	so.flags.ignore_links = True
 	# Skip the customer-debt block — the SI was already approved.
 	so.flags.ignore_validate = True
+	# The invoice flow already owns the (single) Delivery Note mapped off the SI,
+	# so tell the Sales Order handler not to create a duplicate one on submit.
+	so.flags.skip_auto_delivery_note = True
 	try:
 		so.insert(ignore_permissions=True)
 	except Exception:
 		frappe.log_error(frappe.get_traceback(), "4S SI->SO: insert failed")
 		return None
+
+	# Wire native ERPNext links across SI ↔ SO ↔ DN now that the Sales Order
+	# Items have names. Done before submit so the links exist even if submit
+	# fails and the SO is left as a draft for review.
+	_apply_native_links(si, so, si_item_names)
 
 	try:
 		so.submit()
@@ -138,7 +150,9 @@ def create_sales_order_for_invoice(si) -> str | None:
 		# Leave the SO as draft so the user can review
 		return so.name
 
-	# Link back to the invoice (allow_on_submit on the link field)
+	# Legacy convenience pointer on the invoice header. The authoritative links
+	# are the native sales_order / so_detail fields set in _apply_native_links;
+	# this is kept only for backward compatibility.
 	try:
 		frappe.db.set_value("Sales Invoice", si.name, "custom_auto_created_sales_order", so.name)
 	except Exception:
@@ -149,3 +163,56 @@ def create_sales_order_for_invoice(si) -> str | None:
 		alert=True,
 	)
 	return so.name
+
+
+def _apply_native_links(si, so, si_item_names: list[str]) -> None:
+	"""Interlink the Sales Invoice, auto-created Sales Order, and draft Delivery
+	Note through ERPNext's standard fields — no custom fields involved:
+
+	  • Sales Invoice Item  → Sales Order   (sales_order, so_detail)
+	  • Delivery Note Item  → Sales Order   (against_sales_order, so_detail)
+
+	The Delivery Note already carries against_sales_invoice / si_detail from when
+	it was mapped off the invoice, so after this runs all three documents are
+	mutually discoverable in the standard "Connections" view and the Delivery
+	Note's submission/deletion correctly flows back to the Sales Order.
+	"""
+	# Pair each Sales Invoice Item with its freshly-named Sales Order Item.
+	# so.items and si_item_names are appended in lock-step, so they align by index.
+	si_to_so_item = {
+		si_item_name: so_item.name
+		for si_item_name, so_item in zip(si_item_names, so.items)
+		if si_item_name
+	}
+	if not si_to_so_item:
+		return
+
+	# 1. Sales Invoice Item → Sales Order. update_modified=False keeps the just
+	#    -submitted invoice's timestamp stable (avoids a mid-submit clash).
+	for si_item_name, so_item_name in si_to_so_item.items():
+		frappe.db.set_value(
+			"Sales Invoice Item",
+			si_item_name,
+			{"sales_order": so.name, "so_detail": so_item_name},
+			update_modified=False,
+		)
+
+	# 2. Delivery Note Item → Sales Order, matched back through si_detail.
+	dn_items = frappe.get_all(
+		"Delivery Note Item",
+		filters={
+			"against_sales_invoice": si.name,
+			"docstatus": 0,
+			"si_detail": ["in", list(si_to_so_item)],
+		},
+		fields=["name", "si_detail"],
+	)
+	for row in dn_items:
+		so_item_name = si_to_so_item.get(row.si_detail)
+		if so_item_name:
+			frappe.db.set_value(
+				"Delivery Note Item",
+				row.name,
+				{"against_sales_order": so.name, "so_detail": so_item_name},
+				update_modified=False,
+			)
