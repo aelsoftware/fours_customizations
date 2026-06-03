@@ -206,11 +206,25 @@ def _teardown_linked_sales_orders(si):
     )
     so_names.discard(None)
 
+    failed = []
     for so_name in so_names:
         try:
             _cancel_sales_order_chain(so_name, deleted_dn="")
         except Exception:
+            failed.append(so_name)
             frappe.log_error(frappe.get_traceback(), "4S Auto-Cancel: SO teardown failed")
+
+    # The invoice cancellation already committed; if an order couldn't follow it
+    # down, say so loudly rather than leaving a live order behind silently.
+    if failed:
+        frappe.msgprint(
+            _(
+                "Sales Invoice was cancelled, but Sales Order(s) {0} could not be "
+                "cancelled automatically — please cancel them manually."
+            ).format(", ".join(failed)),
+            indicator="orange",
+            alert=True,
+        )
 
 
 # ── notifications ───────────────────────────────────────────────────────────────
