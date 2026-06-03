@@ -79,6 +79,18 @@ def before_submit(doc, method=None):
                 except Exception:
                         frappe.log_error(frappe.get_traceback(), "4S SI before_submit: negative stock check failed")
 
+                # Create + submit the origin Sales Order and link the invoice items to
+                # it BEFORE the billing pass, so ERPNext rolls the billed amount into
+                # the Sales Order and the SO/DN cancel cleanly in reverse. (Previously
+                # done in on_submit — after billing — which left the SO unbilled and
+                # its links unregistered, blocking cancellation.)
+                try:
+                        from fours_customizations.si_to_so import create_sales_order_for_invoice
+
+                        create_sales_order_for_invoice(doc)
+                except Exception:
+                        frappe.log_error(frappe.get_traceback(), "4S SI before_submit: SO creation failed")
+
 
 def before_save(doc, method=None):
         """Auto-enable advance allocation and prevent Include Payment from forcing update_stock on."""
@@ -122,20 +134,17 @@ def before_save(doc, method=None):
 
 
 def on_submit(doc, method=None):
-        """Create draft Delivery Note and auto Sales Order on submit."""
+        """Create the draft Delivery Note on submit.
+
+        The origin Sales Order is created earlier, in before_submit, so the
+        invoice can roll its billed amount into it. The Delivery Note is mapped
+        off the invoice here and inherits against_sales_order / so_detail from the
+        now-linked invoice items.
+        """
         if not _is_automation_enabled(doc.company):
                 return
 
         _create_draft_delivery_note(doc)
-
-        # Req #1: spawn a Sales Order so ERPNext reserves stock against the warehouse.
-        if not doc.is_return:
-                try:
-                        from fours_customizations.si_to_so import create_sales_order_for_invoice
-
-                        create_sales_order_for_invoice(doc)
-                except Exception:
-                        frappe.log_error(frappe.get_traceback(), "4S SI on_submit: SO creation failed")
 
 
 def _create_draft_delivery_note(doc):

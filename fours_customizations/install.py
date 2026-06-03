@@ -176,15 +176,6 @@ def create_sales_invoice_custom_fields():
 				"mandatory_depends_on": "eval:doc.company == '4S Industries Limited'",
 				"description": "When set, the Sales Team is automatically populated with this person at 100% allocation.",
 			},
-			{
-				"fieldname": "custom_auto_created_sales_order",
-				"label": "Auto-created Sales Order",
-				"fieldtype": "Link",
-				"options": "Sales Order",
-				"insert_after": "total_commission",
-				"read_only": 1,
-				"no_copy": 1,
-			},
 		],
 	}
 

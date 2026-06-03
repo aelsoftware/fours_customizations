@@ -195,9 +195,16 @@ def _teardown_linked_sales_orders(si):
     from fours_customizations.delivery_note_handler import _cancel_sales_order_chain
 
     so_names = {item.sales_order for item in si.items if item.get("sales_order")}
-    legacy_so = si.get("custom_auto_created_sales_order")
-    if legacy_so:
-        so_names.add(legacy_so)
+    # Also catch auto-created orders via their back-pointer — covers invoices
+    # whose items predate native sales_order linking.
+    so_names.update(
+        frappe.get_all(
+            "Sales Order",
+            filters={"custom_source_sales_invoice": si.name},
+            pluck="name",
+        )
+    )
+    so_names.discard(None)
 
     for so_name in so_names:
         try:

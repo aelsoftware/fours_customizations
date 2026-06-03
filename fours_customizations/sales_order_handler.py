@@ -177,8 +177,12 @@ def before_submit(doc, method=None):
 	"""Block SO submission if the customer has any outstanding receivable balance.
 
 	Bypassed entirely when the customer's custom_allow_credit flag is checked —
-	meaning the business has explicitly approved this customer for credit trading.
+	meaning the business has explicitly approved this customer for credit trading —
+	or when the skip_debt_check flag is set (e.g. the auto-SO that mirrors an
+	already-approved Sales Invoice).
 	"""
+	if doc.flags.get("skip_debt_check"):
+		return
 	allow_credit = frappe.db.get_value("Customer", doc.customer, "custom_allow_credit")
 	if allow_credit:
 		return  # Customer is approved for credit — skip debt check
