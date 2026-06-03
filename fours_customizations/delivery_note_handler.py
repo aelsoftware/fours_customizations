@@ -2,9 +2,13 @@
 Delivery Note Handler — Fours Customizations
 =============================================
 on_trash
-  When a Delivery Note is deleted the following chain is executed in order:
+  When a Delivery Note is deleted, its sales chain is unwound, in order:
 
-  1. Cancel linked Sales Invoices (existing behaviour, unchanged).
+  1. Cancel every linked Sales Invoice (found via against_sales_invoice on the
+     DN items). Done FIRST because the invoice holds the sales_order link on its
+     items that would otherwise block the Sales Order cancellation. ignore_links
+     is used so the auto-SO back-pointer (custom_source_sales_invoice) doesn't
+     block it.
   2. For every Sales Order referenced by the deleted DN items:
        a. Skip if the SO is already cancelled or if other *submitted* DNs
           still exist for it (meaning the SO was partially fulfilled and
@@ -13,6 +17,10 @@ on_trash
        c. Cancel all submitted Stock Reservation Entries for the SO.
        d. Cancel the Sales Order itself — leaving it in a state where it
           can be amended and re-submitted after corrections.
+
+  Every step skips documents that aren't currently submitted, so the handler is
+  re-runnable and co-exists with the auto-cancel flow (which cancels the invoice
+  before deleting the draft DN).
 """
 
 import frappe
@@ -39,6 +47,12 @@ def on_trash(doc, method=None):
 	if not frappe.db.get_value("Company", company, "enable_selling_automations"):
 		return
 
+	# ── 1. Cancel linked Sales Invoices first ─────────────────────────────────
+	# A submitted invoice holds the sales_order link on its items, which would
+	# block the Sales Order cancellation below — so the invoice goes first.
+	for si_name in _get_linked_sales_invoices(doc):
+		_cancel_sales_invoice(si_name)
+
 	# ── 2. Cancel Sales Orders (and their dependants) ─────────────────────────
 	for so_name in _get_linked_sales_orders(doc):
 		_cancel_sales_order_chain(so_name, deleted_dn=doc.name)
@@ -54,6 +68,34 @@ def _get_linked_sales_orders(doc) -> set:
 		for item in doc.items
 		if getattr(item, "against_sales_order", None)
 	}
+
+
+def _get_linked_sales_invoices(doc) -> set:
+	"""Return unique Sales Invoice names referenced by DN items."""
+	return {
+		item.against_sales_invoice
+		for item in doc.items
+		if getattr(item, "against_sales_invoice", None)
+	}
+
+
+def _cancel_sales_invoice(si_name: str):
+	"""Cancel a linked Sales Invoice.
+
+	Skips anything not currently submitted, so the handler is safe to re-run and
+	to co-exist with the auto-cancel flow (which cancels the invoice before
+	deleting the draft DN). ignore_links bypasses the auto-Sales-Order
+	back-pointer (custom_source_sales_invoice) and payment links that would
+	otherwise block the cancel — the order is torn down immediately afterwards.
+	"""
+	if frappe.db.get_value("Sales Invoice", si_name, "docstatus") != 1:
+		return
+
+	si = frappe.get_doc("Sales Invoice", si_name)
+	si.flags.ignore_permissions = True
+	si.flags.ignore_links = True
+	si.cancel()
+	frappe.msgprint(f"Sales Invoice {si_name} cancelled.", alert=True)
 
 
 # ── cancellation chain ────────────────────────────────────────────────────────
