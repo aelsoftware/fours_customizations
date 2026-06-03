@@ -78,7 +78,7 @@ def _ensure_custom_sales_person_field() -> None:
 					"fieldtype": "Link",
 					"options": "Sales Person",
 					"insert_after": "sales_partner",
-					"description": "When set, the Sales Team is automatically populated with this person at 100% allocation. Sits just before Amount Eligible for Commission.",
+					"description": "When set, the Sales Team is automatically populated with this person at 100% allocation.",
 				}
 			]
 		},
