@@ -174,7 +174,7 @@ def create_sales_invoice_custom_fields():
 				"options": "Sales Person",
 				"insert_after": "sales_partner",
 				"mandatory_depends_on": "eval:doc.company == '4S Industries Limited'",
-				"description": "When set, the Sales Team is automatically populated with this person at 100% allocation. Sits just before Amount Eligible for Commission.",
+				"description": "When set, the Sales Team is automatically populated with this person at 100% allocation.",
 			},
 			{
 				"fieldname": "custom_auto_created_sales_order",
