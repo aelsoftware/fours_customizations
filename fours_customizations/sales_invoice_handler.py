@@ -15,7 +15,7 @@ and added straight to the Salary Slip.
 """
 
 import frappe
-from frappe.utils import flt
+from frappe.utils import flt, fmt_money
 from frappe.model.mapper import get_mapped_doc
 
 from fours_customizations.fours_customizations.doctype.four_s_industries_settings.four_s_industries_settings import (
@@ -68,10 +68,94 @@ def _sync_custom_sales_person_to_team(doc):
         })
 
 
+def _customer_available_credit(customer, company):
+        """Company-currency advance/credit the customer holds on account — a net
+        credit balance across their receivable accounts (they've paid ahead).
+        Returns 0 when they owe on net. This invoice's own GL has not posted yet
+        at before_submit, so this is the balance available to cover it.
+
+        Assumes advances sit in the receivable account (Company /
+        'Book Advance Payments in Separate Party Account' OFF, as configured here).
+        """
+        net = frappe.db.sql(
+                """
+                SELECT COALESCE(SUM(gle.debit - gle.credit), 0)
+                FROM `tabGL Entry` gle
+                INNER JOIN `tabAccount` a ON a.name = gle.account
+                WHERE gle.party_type = 'Customer'
+                    AND gle.party = %(customer)s
+                    AND gle.company = %(company)s
+                    AND gle.is_cancelled = 0
+                    AND a.account_type = 'Receivable'
+                """,
+                {"customer": customer, "company": company},
+        )[0][0]
+        net = flt(net)
+        return -net if net < 0 else 0.0
+
+
+def _validate_payment_or_credit(doc):
+        """Block submission unless the invoice is covered: paid now (POS / Include
+        Payment + write-off), the customer holds enough available advance/credit,
+        or the customer is whitelisted via custom_allow_credit."""
+        # Consolidated POS invoices aggregate already-settled sales — never block.
+        if doc.get("is_consolidated"):
+                return
+
+        # Whitelisted for credit → always allowed.
+        if frappe.db.get_value("Customer", doc.customer, "custom_allow_credit"):
+                return
+
+        grand_total = flt(doc.rounded_total or doc.grand_total)
+        if grand_total <= 0:
+                return  # nothing to collect
+
+        # Immediate payment recorded on this invoice (transaction currency).
+        paid_now = flt(doc.paid_amount) + flt(doc.write_off_amount)
+
+        # Customer's available credit is company-currency; convert to the invoice
+        # currency (conversion_rate = company-currency units per invoice unit).
+        conv = flt(doc.conversion_rate) or 1.0
+        available_credit = _customer_available_credit(doc.customer, doc.company) / conv
+
+        if paid_now + available_credit >= grand_total - 0.5:
+                return
+
+        shortfall = grand_total - paid_now - available_credit
+        currency = doc.currency
+        frappe.throw(
+                f"""
+<div style="font-family:'Segoe UI',Arial,sans-serif;line-height:1.6;color:#222;">
+  <p style="font-size:14px;"><b>This invoice is not paid, and the customer is not cleared for credit.</b></p>
+  <p><b>{doc.customer_name or doc.customer}</b> has neither paid in full nor holds enough
+     advance/credit on account to cover it:</p>
+  <table style="border-collapse:collapse;margin:8px 0 12px;font-size:13px;">
+    <tr><td style="padding:4px 12px;border:1px solid #eee;">Invoice total</td>
+        <td style="padding:4px 12px;border:1px solid #eee;text-align:right;"><b>{fmt_money(grand_total, currency=currency)}</b></td></tr>
+    <tr><td style="padding:4px 12px;border:1px solid #eee;">Paid now</td>
+        <td style="padding:4px 12px;border:1px solid #eee;text-align:right;">{fmt_money(paid_now, currency=currency)}</td></tr>
+    <tr><td style="padding:4px 12px;border:1px solid #eee;">Available advance / credit</td>
+        <td style="padding:4px 12px;border:1px solid #eee;text-align:right;">{fmt_money(available_credit, currency=currency)}</td></tr>
+    <tr style="background:#fff5f5;"><td style="padding:4px 12px;border:1px solid #eee;"><b>Shortfall</b></td>
+        <td style="padding:4px 12px;border:1px solid #eee;text-align:right;color:#c0392b;"><b>{fmt_money(shortfall, currency=currency)}</b></td></tr>
+  </table>
+  <p>To submit: collect full payment, ensure the customer has enough advance/credit on
+     account, or tick <b>Allow Credit</b> on the customer if they are approved for credit.</p>
+</div>
+""",
+                title="Payment or Credit Required",
+        )
+
+
 def before_submit(doc, method=None):
         doc.update_outstanding_for_self = 0
         # Silently enable negative stock on items that would otherwise block.
         if _is_automation_enabled(doc.company) and not doc.is_return:
+                # Credit gate: block submission unless the invoice is paid, the
+                # customer has enough advance/credit, or is whitelisted. Runs first
+                # so we never spin up a Sales Order for an invoice we then reject.
+                _validate_payment_or_credit(doc)
+
                 try:
                         from fours_customizations.negative_stock_handler import ensure_negative_stock_for_doc
 
