@@ -212,9 +212,15 @@ def on_submit(doc, method=None):
 
 
 def on_cancel(doc, method=None):
-	"""Cancel all Payment Entries that were created for this Sales Order."""
+	"""Cancel Payment Entries created for this Sales Order, and unlink the order
+	from any Sales Invoice / Delivery Note so those can be amended later without
+	hitting 'Cannot link cancelled document'."""
 	if not _automation_enabled(doc.company):
 		return
+
+	# Strip native links to this cancelled order from the invoice/DN items first,
+	# so an amend of those documents never re-links a cancelled Sales Order.
+	_unlink_so_from_billing_and_delivery(doc.name)
 
 	pes = frappe.get_all(
 		"Payment Entry",
@@ -233,6 +239,29 @@ def on_cancel(doc, method=None):
 		pe = frappe.get_doc("Payment Entry", pe_name)
 		pe.cancel()
 		frappe.msgprint(f"Payment Entry {pe_name} cancelled.", alert=True)
+
+
+def _unlink_so_from_billing_and_delivery(so_name: str):
+	"""Clear native links to this Sales Order from Sales Invoice and Delivery Note
+	items so amending those documents doesn't fail with 'Cannot link cancelled
+	document'. The linked docs are normally already cancelled; we only strip the
+	dangling reference to this (now-cancelled) order."""
+	frappe.db.sql(
+		"""
+		UPDATE `tabSales Invoice Item`
+		SET sales_order = NULL, so_detail = NULL
+		WHERE sales_order = %s
+		""",
+		(so_name,),
+	)
+	frappe.db.sql(
+		"""
+		UPDATE `tabDelivery Note Item`
+		SET against_sales_order = NULL, so_detail = NULL
+		WHERE against_sales_order = %s
+		""",
+		(so_name,),
+	)
 
 
 # ── validation ────────────────────────────────────────────────────────────────
