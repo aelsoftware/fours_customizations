@@ -14,7 +14,7 @@ Hook: Salary Slip — before_save / before_insert
 from __future__ import annotations
 
 import frappe
-from frappe.utils import flt
+from frappe.utils import flt, rounded
 
 from fours_customizations.commission_handler import compute_employee_commission
 from fours_customizations.fours_customizations.doctype.four_s_industries_settings.four_s_industries_settings import (
@@ -48,11 +48,16 @@ def calculate_and_add_deductions(doc, method=None):
 		except Exception:
 			frappe.log_error(frappe.get_traceback(), "4S Salary Slip: designation load failed")
 
-	_apply_commission(doc)
+	commission = _apply_commission(doc)
+
+	# Summary fields for print/reporting (custom fields on Salary Slip).
+	doc.custom_total_commission = flt(commission)
+	doc.custom_basic_pay = _get_employee_base(doc)
 
 	doc.gross_pay = sum([flt(e.amount) for e in doc.earnings])
 	doc.total_deduction = sum([flt(d.amount) for d in doc.deductions])
 	doc.net_pay = doc.gross_pay - doc.total_deduction
+	_sync_derived_totals(doc)
 
 
 # ── attendance ──────────────────────────────────────────────────────────────
@@ -109,18 +114,49 @@ def _apply_overtime(doc, designation):
 # ── commission ──────────────────────────────────────────────────────────────
 
 def _apply_commission(doc):
+	"""Add the commission earning. Returns the commission amount (0 if none)."""
 	commission_component = get_setting("commission_salary_component", "Sales Commission")
 	if not commission_component:
-		return
+		return 0.0
 	if not frappe.db.exists("Salary Component", commission_component):
-		return
+		return 0.0
 	amount = compute_employee_commission(doc.employee, doc.start_date, doc.end_date, doc.company)
 	if amount <= 0:
-		return
+		return 0.0
 	_upsert(doc.earnings, commission_component, amount, doc, "earnings")
+	return flt(amount)
 
 
 # ── helpers ─────────────────────────────────────────────────────────────────
+
+def _get_employee_base(doc):
+	"""Employee's `base` from the latest Salary Structure Assignment in effect."""
+	base = frappe.db.get_value(
+		"Salary Structure Assignment",
+		{"employee": doc.employee, "docstatus": 1, "from_date": ("<=", doc.end_date)},
+		"base",
+		order_by="from_date desc",
+	)
+	return flt(base)
+
+
+def _sync_derived_totals(doc):
+	"""Keep company-currency / rounded / in-words fields consistent with the
+	totals we just recomputed — the standard calculation ran before our rows
+	were added, so these would otherwise stay at the pre-commission values."""
+	exchange_rate = flt(doc.exchange_rate) or 1
+	doc.base_gross_pay = flt(flt(doc.gross_pay) * exchange_rate, doc.precision("base_gross_pay"))
+	doc.base_total_deduction = flt(
+		flt(doc.total_deduction) * exchange_rate, doc.precision("base_total_deduction")
+	)
+	doc.rounded_total = rounded(flt(doc.net_pay))
+	doc.base_net_pay = flt(flt(doc.net_pay) * exchange_rate, doc.precision("base_net_pay"))
+	doc.base_rounded_total = rounded(flt(doc.base_net_pay))
+	try:
+		doc.set_net_total_in_words()
+	except Exception:
+		frappe.log_error(frappe.get_traceback(), "4S Salary Slip: in-words update failed")
+
 
 def _upsert(rows, component_name, amount, doc, table):
 	for row in rows:

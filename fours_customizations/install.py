@@ -12,6 +12,7 @@ def after_install():
 	create_item_custom_fields()
 	create_sales_order_custom_fields()
 	create_company_custom_fields()
+	create_salary_slip_custom_fields()
 	seed_settings_defaults()
 
 
@@ -297,6 +298,38 @@ def create_sales_order_custom_fields():
 				"read_only": 1,
 				"no_copy": 1,
 				"allow_on_submit": 1,
+			},
+		],
+	}
+
+	create_custom_fields(custom_fields, update=True)
+	frappe.db.commit()
+
+
+def create_salary_slip_custom_fields():
+	"""Summary fields stamped by salary_slip_handler for print/reporting."""
+
+	custom_fields = {
+		"Salary Slip": [
+			{
+				"fieldname": "custom_basic_pay",
+				"label": "Basic Pay",
+				"fieldtype": "Currency",
+				"options": "currency",
+				"insert_after": "gross_pay",
+				"read_only": 1,
+				"no_copy": 1,
+				"description": "Employee's base pay from the Salary Structure Assignment in effect for this period.",
+			},
+			{
+				"fieldname": "custom_total_commission",
+				"label": "Total Commission",
+				"fieldtype": "Currency",
+				"options": "currency",
+				"insert_after": "custom_basic_pay",
+				"read_only": 1,
+				"no_copy": 1,
+				"description": "Total Sales Commission added to this slip by Fours Customizations.",
 			},
 		],
 	}

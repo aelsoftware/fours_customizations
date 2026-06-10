@@ -141,6 +141,11 @@ doc_events = {
 		"before_submit": "fours_customizations.delivery_note_handler.before_submit",
 		"on_trash": "fours_customizations.delivery_note_handler.on_trash",
 	},
+	"Employee Checkin": {
+		# First IN drives in_time / late flags, last OUT drives out_time /
+		# early-exit / overtime. Replaces the Employee Checkin Server Script.
+		"after_insert": "fours_customizations.checkin_handler.update_attendance_from_checkin",
+	},
 	"Salary Slip": {
 		"before_save": "fours_customizations.salary_slip_handler.calculate_and_add_deductions",
 		"before_insert": "fours_customizations.salary_slip_handler.calculate_and_add_deductions",
