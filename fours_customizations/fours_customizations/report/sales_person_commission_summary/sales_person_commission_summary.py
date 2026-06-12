@@ -6,8 +6,15 @@ One row per Sales Person, with:
 
   • Total Sales       — Sales Invoices where `custom_sales_person` = this person
                         and posting_date in the window.
+  • POS Refunds       — amounts refunded to customers on POS returns; these
+                        subtract from the commission base.
+  • POS Payments      — amounts collected on POS invoices (`is_pos = 1`) owned
+                        by this person (no Payment Entry exists for those),
+                        net of POS refunds.
+  • PE Refunds        — Payment Entries of type "Pay" to a Customer with this
+                        person as `sales_person`; subtract from the base.
   • Total Payments    — incoming Payment Entries where `sales_person` = this
-                        person and posting_date in the window.
+                        person, less PE refunds, plus the net POS payments.
   • Commission Rate   — from the Sales Person doctype.
   • Total Commission  — total_payments × commission_rate / 100.
 
@@ -56,6 +63,24 @@ def _columns() -> list[dict]:
 		{
 			"label": _("Total Sales"),
 			"fieldname": "total_sales",
+			"fieldtype": "Currency",
+			"width": 160,
+		},
+		{
+			"label": _("POS Refunds"),
+			"fieldname": "pos_refunds",
+			"fieldtype": "Currency",
+			"width": 160,
+		},
+		{
+			"label": _("POS Payments (Net)"),
+			"fieldname": "pos_payments",
+			"fieldtype": "Currency",
+			"width": 160,
+		},
+		{
+			"label": _("PE Refunds"),
+			"fieldname": "payment_entry_refunds",
 			"fieldtype": "Currency",
 			"width": 160,
 		},
@@ -112,6 +137,9 @@ def _data(filters: dict) -> list[dict]:
 			"sales_person": p["name"],
 			"employee": p.get("employee"),
 			"total_sales": summary["total_sales"],
+			"pos_refunds": summary.get("pos_refunds", 0),
+			"pos_payments": summary.get("pos_payments", 0),
+			"payment_entry_refunds": summary.get("payment_entry_refunds", 0),
 			"total_payments": summary["total_payments"],
 			"commission_rate": summary["commission_rate"],
 			"total_commission": summary["total_commission"],
