@@ -15,7 +15,12 @@ def _is_automation_enabled(company):
 
 
 def validate(doc, method=None):
-	"""Require sales_person on incoming payments for the configured company."""
+	"""Require sales_person on customer payments for the configured company.
+
+	Covers both directions: incoming "Receive" payments (drive commission) and
+	"Pay" refunds to a Customer (claw commission back). Without the field a
+	refund would silently escape the commission deduction.
+	"""
 	try:
 		settings = get_settings()
 	except Exception:
@@ -25,11 +30,16 @@ def validate(doc, method=None):
 	required_company = settings.default_company
 	if not required_company or doc.company != required_company:
 		return
-	if doc.payment_type != "Receive":
+
+	is_receive = doc.payment_type == "Receive"
+	is_customer_refund = doc.payment_type == "Pay" and doc.party_type == "Customer"
+	if not (is_receive or is_customer_refund):
 		return
+
 	if not getattr(doc, "sales_person", None):
+		what = "refunds to customers" if is_customer_refund else "incoming payments"
 		frappe.throw(
-			f"Sales Person is required on Payment Entries for {required_company}. "
+			f"Sales Person is required on {what} for {required_company}. "
 			"Set it on the form before saving."
 		)
 
