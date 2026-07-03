@@ -139,7 +139,14 @@ after_migrate = "fours_customizations.install.after_install"
 doc_events = {
 	"Delivery Note": {
 		"before_submit": "fours_customizations.delivery_note_handler.before_submit",
+		"on_submit": "fours_customizations.delivery_note_handler.on_submit",
 		"on_trash": "fours_customizations.delivery_note_handler.on_trash",
+	},
+	"Employee Salary Deduction": {
+		"validate": "fours_customizations.employee_salary_deduction_handler.validate",
+		"before_cancel": "fours_customizations.employee_salary_deduction_handler.before_cancel",
+		"on_submit": "fours_customizations.employee_salary_deduction_handler.on_submit",
+		"on_cancel": "fours_customizations.employee_salary_deduction_handler.on_cancel",
 	},
 	"Employee Checkin": {
 		# First IN drives in_time / late flags, last OUT drives out_time /

@@ -6,6 +6,8 @@ Hook: Salary Slip — before_save / before_insert
 
   • Adds attendance-based deductions (absent, late, early exit, no checkout)
     using rates configured on the employee's Designation.
+  • Adds submitted Employee Salary Deduction amounts dated inside the salary
+    period (grouped by reason → Salary Component).
   • Adds designation-based overtime as a "Designation Overtime Pay" earning.
   • Adds Sales Commission earnings for any Sales Partner linked to the
     employee, calculated across the salary period (see commission_handler.py).
@@ -39,6 +41,11 @@ def calculate_and_add_deductions(doc, method=None):
 	except Exception:
 		frappe.log_error(frappe.get_traceback(), "4S Salary Slip: employee load failed")
 		return
+
+	try:
+		_apply_employee_salary_deductions(doc)
+	except Exception:
+		frappe.log_error(frappe.get_traceback(), "4S Salary Slip: salary deduction apply failed")
 
 	if employee.designation:
 		try:
@@ -95,6 +102,62 @@ def _apply_attendance_deductions(doc, designation):
 		if amount <= 0:
 			continue
 		_upsert(doc.deductions, component, amount, doc, "deductions")
+
+
+# ── employee salary deductions ──────────────────────────────────────────────
+
+_ESD_FALLBACK_COMPONENT = "Employee Salary Deduction"
+
+
+def _esd_component(reason):
+	"""Salary Component for an Employee Salary Deduction reason — the reason
+	itself when a matching component exists, else the generic fallback."""
+	reason = (reason or "").strip()
+	if reason and frappe.db.exists("Salary Component", reason):
+		return reason
+	return _ESD_FALLBACK_COMPONENT
+
+
+def _apply_employee_salary_deductions(doc):
+	"""Pull submitted Employee Salary Deductions dated inside the salary period
+	into the slip's deductions table, grouped by reason → Salary Component.
+
+	Cancelled deductions are included in the candidate set (with zero amount)
+	so a row added earlier is removed again when its deduction is cancelled.
+	"""
+	if not frappe.db.exists("DocType", "Employee Salary Deduction"):
+		return
+
+	rows = frappe.get_all(
+		"Employee Salary Deduction",
+		filters={
+			"employee": doc.employee,
+			"docstatus": ["in", [1, 2]],
+			"date": ["between", [f"{doc.start_date} 00:00:00", f"{doc.end_date} 23:59:59"]],
+		},
+		fields=["reason", "amount", "docstatus"],
+	)
+
+	totals: dict[str, float] = {}
+	candidates: set[str] = set()
+	for row in rows:
+		component = _esd_component(row.reason)
+		candidates.add(component)
+		if row.docstatus == 1:
+			totals[component] = totals.get(component, 0.0) + flt(row.amount)
+
+	for component in candidates:
+		amount = flt(totals.get(component))
+		if amount > 0:
+			_upsert(doc.deductions, component, amount, doc, "deductions")
+		else:
+			_remove_component_row(doc, "deductions", component)
+
+
+def _remove_component_row(doc, table, component_name):
+	rows = [r for r in doc.get(table) or [] if r.salary_component != component_name]
+	if len(rows) != len(doc.get(table) or []):
+		doc.set(table, rows)
 
 
 # ── overtime ────────────────────────────────────────────────────────────────
