@@ -1,6 +1,17 @@
 """
 Delivery Note Handler — Fours Customizations
 =============================================
+on_submit
+  When a Delivery Note **Return** is submitted, the matching Sales Invoice
+  Return is kept in lock-step:
+
+    • If the DN return was auto-created from a Sales Invoice Return, that
+      invoice return is already submitted — nothing to do.
+    • If a draft Sales Invoice Return exists against the original invoice,
+      it is submitted automatically.
+    • Otherwise a Sales Invoice Return (credit note) is created from the
+      original invoice, sized to the returned quantities, and submitted.
+
 on_trash
   When a Delivery Note is deleted, its sales chain is unwound, in order:
 
@@ -24,6 +35,7 @@ on_trash
 """
 
 import frappe
+from frappe.utils import flt
 
 
 # ── entry point ───────────────────────────────────────────────────────────────
@@ -38,6 +50,24 @@ def before_submit(doc, method=None):
 		ensure_negative_stock_for_doc(doc)
 	except Exception:
 		frappe.log_error(frappe.get_traceback(), "4S DN before_submit: negative stock check failed")
+
+
+def on_submit(doc, method=None):
+	"""Keep Sales Invoice Returns in lock-step with Delivery Note Returns."""
+	if not frappe.db.get_value("Company", doc.company, "enable_selling_automations"):
+		return
+	if not doc.is_return:
+		return
+	try:
+		_sync_sales_invoice_return(doc)
+	except Exception:
+		frappe.log_error(frappe.get_traceback(), "4S DN return: SI return sync failed")
+		frappe.msgprint(
+			"Could not auto-submit the Sales Invoice Return for this Delivery Note "
+			"Return — please create/submit it manually. Details are in the Error Log.",
+			indicator="orange",
+			alert=True,
+		)
 
 
 def on_trash(doc, method=None):
@@ -56,6 +86,111 @@ def on_trash(doc, method=None):
 	# ── 2. Cancel Sales Orders (and their dependants) ─────────────────────────
 	for so_name in _get_linked_sales_orders(doc):
 		_cancel_sales_order_chain(so_name, deleted_dn=doc.name)
+
+
+# ── DN return → SI return sync ───────────────────────────────────────────────
+
+def _sync_sales_invoice_return(dn):
+	"""Ensure a submitted Sales Invoice Return exists for this submitted
+	Delivery Note Return.
+
+	Per original Sales Invoice touched by the returned items:
+	  1. Skip if this DN return was itself auto-created from a Sales Invoice
+	     Return (that credit note is already submitted).
+	  2. Submit an existing draft Sales Invoice Return, if one exists.
+	  3. Otherwise create one from the original invoice, sized to the returned
+	     quantities, interlink it to this DN return, and submit it.
+	"""
+	# Case 1 — DN return spawned by the SI-return flow (see sales_invoice_handler).
+	if "Auto-created from Sales Invoice Return" in (dn.get("custom_remarks") or ""):
+		return
+
+	# Map returned rows back to the original Sales Invoice / SI item. The links
+	# usually come across on the return rows; fall back to the original DN item.
+	qty_by_si_item = {}     # {si_name: {si_detail: qty (negative)}}
+	dn_row_by_si_item = {}  # {si_name: {si_detail: DN return item name}}
+	for item in dn.items:
+		si_name = item.get("against_sales_invoice")
+		si_detail = item.get("si_detail")
+		if (not si_name or not si_detail) and item.get("dn_detail"):
+			orig = frappe.db.get_value(
+				"Delivery Note Item",
+				item.dn_detail,
+				["against_sales_invoice", "si_detail"],
+				as_dict=True,
+			)
+			if orig:
+				si_name = si_name or orig.against_sales_invoice
+				si_detail = si_detail or orig.si_detail
+		if not si_name or not si_detail:
+			continue
+		qty_by_si_item.setdefault(si_name, {})
+		qty_by_si_item[si_name][si_detail] = (
+			qty_by_si_item[si_name].get(si_detail, 0) + flt(item.qty)
+		)
+		dn_row_by_si_item.setdefault(si_name, {})[si_detail] = item.name
+
+	for si_name, si_item_qty in qty_by_si_item.items():
+		if frappe.db.get_value("Sales Invoice", si_name, "docstatus") != 1:
+			continue
+
+		# Case 2 — a draft SI return already exists: submit it.
+		draft_return = frappe.db.get_value(
+			"Sales Invoice",
+			{"is_return": 1, "return_against": si_name, "docstatus": 0},
+			"name",
+		)
+		if draft_return:
+			si_return = frappe.get_doc("Sales Invoice", draft_return)
+			si_return.flags.from_dn_return = True
+			si_return.flags.ignore_permissions = True
+			si_return.submit()
+			frappe.msgprint(
+				f"Sales Invoice Return {si_return.name} submitted.", alert=True
+			)
+			continue
+
+		# Case 3 — create + submit a new SI return sized to this DN return.
+		_create_and_submit_si_return(
+			dn, si_name, si_item_qty, dn_row_by_si_item.get(si_name, {})
+		)
+
+
+def _create_and_submit_si_return(dn, si_name, si_item_qty, dn_rows):
+	"""Create a Sales Invoice Return (credit note) from `si_name` covering only
+	the items/quantities on this Delivery Note Return, then submit it."""
+	from erpnext.controllers.sales_and_purchase_return import make_return_doc
+
+	si_return = make_return_doc("Sales Invoice", si_name)
+	si_return.update_stock = 0
+	si_return.is_pos = 0
+	si_return.set_posting_time = 1
+	si_return.posting_date = dn.posting_date
+	si_return.posting_time = dn.posting_time
+
+	kept = []
+	for item in si_return.items:
+		source_row = item.get("sales_invoice_item")
+		if source_row and source_row in si_item_qty:
+			item.qty = flt(si_item_qty[source_row])  # negative
+			item.delivery_note = dn.name
+			item.dn_detail = dn_rows.get(source_row)
+			kept.append(item)
+	if not kept:
+		return
+	si_return.set("items", kept)
+	for idx, item in enumerate(si_return.items, start=1):
+		item.idx = idx
+
+	si_return.flags.from_dn_return = True
+	si_return.flags.ignore_permissions = True
+	si_return.insert(ignore_permissions=True)
+	si_return.submit()
+	frappe.msgprint(
+		f"Sales Invoice Return {si_return.name} created and submitted for "
+		f"Delivery Note Return {dn.name}.",
+		alert=True,
+	)
 
 
 # ── helpers — linked document lookup ─────────────────────────────────────────

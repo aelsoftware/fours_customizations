@@ -143,6 +143,7 @@ def create_salary_components():
 		{"salary_component": "Late Deduction", "type": "Deduction"},
 		{"salary_component": "Early Exit Deduction", "type": "Deduction"},
 		{"salary_component": "No Checkout Deduction", "type": "Deduction"},
+		{"salary_component": "Employee Salary Deduction", "type": "Deduction"},
 		{"salary_component": "Designation Overtime Pay", "type": "Earning"},
 		{"salary_component": "Sales Commission", "type": "Earning"},
 	]
@@ -226,7 +227,7 @@ def create_company_custom_fields():
 				"label": "Enable Selling Automations",
 				"fieldtype": "Check",
 				"insert_after": "selling_automations_tab",
-				"description": "Enable auto Sales Order creation, draft Delivery Notes, and advance allocation on Sales Invoices.",
+				"description": "Enable draft Delivery Note creation, return interlinking, and advance allocation on Sales Invoices.",
 			},
 		],
 	}

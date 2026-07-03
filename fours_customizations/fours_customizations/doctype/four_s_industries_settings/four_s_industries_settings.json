@@ -17,10 +17,7 @@
         "enable_payroll_automation",
         "sales_tab",
         "section_break_sales",
-        "enable_so_from_si",
         "enforce_sales_person_on_payment",
-        "column_break_sales",
-        "default_so_warehouse",
         "section_break_commission",
         "commission_salary_component",
         "attendance_tab",
@@ -121,14 +118,7 @@
         {
             "fieldname": "section_break_sales",
             "fieldtype": "Section Break",
-            "label": "Sales Order Automation"
-        },
-        {
-            "default": "1",
-            "description": "When a Sales Invoice is submitted, automatically create and submit a Sales Order for stock reservation.",
-            "fieldname": "enable_so_from_si",
-            "fieldtype": "Check",
-            "label": "Create Sales Order from Sales Invoice"
+            "label": "Sales Automation"
         },
         {
             "default": "1",
@@ -136,16 +126,6 @@
             "fieldname": "enforce_sales_person_on_payment",
             "fieldtype": "Check",
             "label": "Require Sales Person on Payment Entry"
-        },
-        {
-            "fieldname": "column_break_sales",
-            "fieldtype": "Column Break"
-        },
-        {
-            "fieldname": "default_so_warehouse",
-            "fieldtype": "Link",
-            "label": "Default Sales Order Warehouse",
-            "options": "Warehouse"
         },
         {
             "fieldname": "section_break_commission",
@@ -234,11 +214,10 @@
             "label": "Late/Absentee Notification Time"
         },
         {
-            "description": "Primary email recipient for late/absentee summaries.",
+            "description": "Primary email recipient(s) for late/absentee summaries. Separate multiple addresses with commas.",
             "fieldname": "attendance_notification_recipient",
-            "fieldtype": "Data",
-            "label": "Attendance Notification Recipient",
-            "options": "Email"
+            "fieldtype": "Small Text",
+            "label": "Attendance Notification Recipients"
         },
         {
             "fieldname": "column_break_notifications",
@@ -262,11 +241,10 @@
             "label": "Negative Stock Notification Time"
         },
         {
-            "description": "Recipient for daily negative-stock / reconciliation requests.",
+            "description": "Recipient(s) for daily negative-stock / reconciliation requests. Separate multiple addresses with commas.",
             "fieldname": "negative_stock_notification_recipient",
-            "fieldtype": "Data",
-            "label": "Negative Stock Notification Recipient",
-            "options": "Email"
+            "fieldtype": "Small Text",
+            "label": "Negative Stock Notification Recipients"
         },
         {
             "fieldname": "column_break_negstock",
@@ -325,11 +303,10 @@
             "options": "1st day of next month\n2nd day of next month\n3rd day of next month\n4th day of next month\nLast day of payroll period month"
         },
         {
-            "description": "Boss's email — receives the payroll Excel summary.",
+            "description": "Primary recipient(s) of the payroll Excel summary. Separate multiple addresses with commas.",
             "fieldname": "boss_email",
-            "fieldtype": "Data",
-            "label": "Boss Email",
-            "options": "Email"
+            "fieldtype": "Small Text",
+            "label": "Payroll Email Recipients"
         },
         {
             "fieldname": "column_break_payroll",
@@ -352,7 +329,7 @@
     "index_web_pages_for_search": 1,
     "issingle": 1,
     "links": [],
-    "modified": "2026-05-28 00:00:00",
+    "modified": "2026-07-03 00:00:00",
     "modified_by": "Administrator",
     "module": "Fours Customizations",
     "name": "Four S Industries Settings",
