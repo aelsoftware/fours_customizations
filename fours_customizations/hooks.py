@@ -142,6 +142,9 @@ doc_events = {
 		"on_submit": "fours_customizations.delivery_note_handler.on_submit",
 		"on_trash": "fours_customizations.delivery_note_handler.on_trash",
 	},
+	"Employee": {
+		"on_update": "fours_customizations.employee_handler.on_update",
+	},
 	"Employee Salary Deduction": {
 		"validate": "fours_customizations.employee_salary_deduction_handler.validate",
 		"before_cancel": "fours_customizations.employee_salary_deduction_handler.before_cancel",
