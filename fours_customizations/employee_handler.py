@@ -2,81 +2,187 @@
 Employee Handler — Fours Customizations
 =======================================
 
-Keeps the employee's Salary Structure Assignment in step with the salary
-figure held on the Employee record.
+Drives an employee's **Shift Assignment** and **Salary Structure Assignment**
+directly off the Employee record, so both stay at exactly one active assignment
+per employee (replacing the old weekly server script that created one Shift
+Assignment per day).
 
-on_update
-  When an Employee's **Cost to Company (CTC)** changes, the latest Salary
-  Structure Assignment is updated to carry the new amount as its ``base``:
+on_update (fires on insert and on every save)
+  Shift Assignment — keyed off ``default_shift``:
+    • New employee (or the shift changed): cancel any current/future submitted
+      Shift Assignment and create ONE open-ended assignment (no end date) for
+      the new shift. Past assignments are left untouched.
+    • No ``default_shift`` set: nothing is created — the employee is not on a
+      clock-in schedule and is excluded from attendance deductions.
 
-    • A *draft* assignment is edited in place.
-    • A *submitted* assignment is cancelled and re-created as an amendment
-      (same from_date / salary structure) carrying the new base, then
-      re-submitted — the only way to change a submitted, immutable document.
-
-  If no assignment exists yet, there is nothing to update.
+  Salary Structure Assignment — keyed off ``ctc`` (Cost to Company):
+    • CTC set and no assignment yet: create one carrying ``base = ctc`` (using
+      the company's salary structure — resolved from the ``default_salary_structure``
+      setting, or the company's single active structure).
+    • CTC changed with an existing assignment: a draft is edited in place; a
+      submitted one is cancelled and re-created as an amendment with the new base.
 """
 
 from __future__ import annotations
 
 import frappe
-from frappe.utils import flt
+from frappe.utils import flt, getdate, nowdate
+
+from fours_customizations.fours_customizations.doctype.four_s_industries_settings.four_s_industries_settings import (
+	get_setting,
+)
 
 
 def on_update(doc, method=None):
-	"""Propagate a changed CTC to the employee's latest Salary Structure Assignment."""
-	# Guard against re-entrancy (cancel/submit below re-saves nothing on Employee,
-	# but stay defensive against nested saves).
-	if getattr(doc, "_4s_ctc_syncing", False):
+	"""Sync the employee's shift + salary-structure assignments. Fires on insert
+	(previous is None) and on every subsequent save."""
+	if getattr(doc, "_4s_emp_syncing", False):
 		return
 
 	previous = doc.get_doc_before_save()
-	if previous is None:
-		return  # brand-new employee — no assignment to sync yet
 
-	if flt(previous.ctc) == flt(doc.ctc):
-		return  # CTC unchanged
+	doc._4s_emp_syncing = True
+	try:
+		try:
+			_sync_shift_assignment(doc, previous)
+		except Exception:
+			frappe.log_error(frappe.get_traceback(), f"4S Employee: shift assignment sync failed for {doc.name}")
+			frappe.msgprint(
+				"Could not automatically update the Shift Assignment — please set it "
+				"manually. Details are in the Error Log.",
+				indicator="orange", alert=True,
+			)
+		try:
+			_sync_salary_structure_assignment(doc, previous)
+		except Exception:
+			frappe.log_error(frappe.get_traceback(), f"4S Employee: salary structure sync failed for {doc.name}")
+			frappe.msgprint(
+				"Could not automatically update the Salary Structure Assignment — please "
+				"set it manually. Details are in the Error Log.",
+				indicator="orange", alert=True,
+			)
+	finally:
+		doc._4s_emp_syncing = False
 
+
+# ── Shift Assignment ─────────────────────────────────────────────────────────
+
+def _sync_shift_assignment(doc, previous):
+	shift = doc.default_shift
+	if not shift:
+		return  # not on a shift schedule → nothing to assign
+
+	# Only act when the shift is newly set or changed.
+	if previous is not None and previous.default_shift == doc.default_shift:
+		return
+
+	today = getdate(nowdate())
+	doj = getdate(doc.date_of_joining) if doc.date_of_joining else None
+	from_date = doj if (doj and doj > today) else today
+
+	# Cancel any current or future submitted assignments so the new one doesn't
+	# overlap and the employee ends up with a single active assignment. Past
+	# assignments (already ended) are left for the historical record.
+	existing = frappe.get_all(
+		"Shift Assignment",
+		filters={"employee": doc.name, "docstatus": 1},
+		fields=["name", "end_date"],
+	)
+	for row in existing:
+		if row.end_date is None or getdate(row.end_date) >= from_date:
+			sa = frappe.get_doc("Shift Assignment", row.name)
+			sa.flags.ignore_permissions = True
+			sa.cancel()
+
+	sa = frappe.new_doc("Shift Assignment")
+	sa.employee = doc.name
+	sa.shift_type = shift
+	sa.company = doc.company
+	sa.status = "Active"
+	sa.start_date = from_date
+	# end_date intentionally left blank → one ongoing assignment.
+	sa.flags.ignore_permissions = True
+	sa.insert(ignore_permissions=True)
+	sa.submit()
+	frappe.msgprint(f"Shift Assignment {sa.name} created for shift '{shift}'.", alert=True)
+
+
+# ── Salary Structure Assignment ──────────────────────────────────────────────
+
+def _sync_salary_structure_assignment(doc, previous):
 	new_base = flt(doc.ctc)
 	if new_base <= 0:
 		return
 
-	assignment = _latest_assignment(doc.name)
-	if not assignment:
+	# Only act when CTC is newly set or changed.
+	if previous is not None and flt(previous.ctc) == new_base:
 		return
 
-	doc._4s_ctc_syncing = True
-	try:
-		if assignment.docstatus == 0:
-			_update_draft_assignment(assignment.name, new_base)
-		elif assignment.docstatus == 1:
-			_amend_submitted_assignment(assignment.name, new_base)
-	except Exception:
-		frappe.log_error(
-			frappe.get_traceback(),
-			f"4S Employee: failed to sync Salary Structure Assignment for {doc.name}",
-		)
+	assignment = _latest_assignment(doc.name)
+	if not assignment:
+		_create_salary_structure_assignment(doc, new_base)
+		return
+
+	if assignment.docstatus == 0:
+		_update_draft_assignment(assignment.name, new_base)
+	elif assignment.docstatus == 1:
+		_amend_submitted_assignment(assignment.name, new_base)
+
+
+def _resolve_salary_structure(company: str) -> str | None:
+	"""Salary Structure to assign: the configured default (if it belongs to the
+	company), else the company's single active structure, else None (ambiguous)."""
+	default = get_setting("default_salary_structure")
+	if default and frappe.db.get_value("Salary Structure", default, "company") == company:
+		return default
+	structs = frappe.get_all(
+		"Salary Structure",
+		filters={"company": company, "is_active": "Yes", "docstatus": 1},
+		pluck="name",
+	)
+	return structs[0] if len(structs) == 1 else None
+
+
+def _create_salary_structure_assignment(doc, base: float):
+	structure = _resolve_salary_structure(doc.company)
+	if not structure:
 		frappe.msgprint(
-			"Could not automatically update the Salary Structure Assignment with the "
-			"new Cost to Company — please update it manually. Details are in the Error Log.",
-			indicator="orange",
-			alert=True,
+			"Cost to Company was set but no Salary Structure Assignment could be "
+			"created automatically — the company has several active salary structures. "
+			"Set 'Default Salary Structure' in Four S Industries Settings, or create the "
+			"assignment manually.",
+			indicator="orange", alert=True,
 		)
-	finally:
-		doc._4s_ctc_syncing = False
+		return
+
+	today = getdate(nowdate())
+	doj = getdate(doc.date_of_joining) if doc.date_of_joining else None
+	from_date = doj if doj else today
+
+	ssa = frappe.new_doc("Salary Structure Assignment")
+	ssa.employee = doc.name
+	ssa.salary_structure = structure
+	ssa.company = doc.company
+	ssa.from_date = from_date
+	ssa.base = base
+	ssa.flags.ignore_permissions = True
+	ssa.insert(ignore_permissions=True)
+	ssa.submit()
+	frappe.msgprint(
+		f"Salary Structure Assignment {ssa.name} created with base {base:,.2f}.",
+		alert=True,
+	)
 
 
 def _latest_assignment(employee: str):
-	"""Return the most recent active (draft or submitted) Salary Structure
-	Assignment for the employee, preferring the latest from_date."""
-	row = frappe.db.get_value(
+	"""Most recent active (draft or submitted) Salary Structure Assignment."""
+	return frappe.db.get_value(
 		"Salary Structure Assignment",
 		{"employee": employee, "docstatus": ["<", 2]},
 		["name", "docstatus", "base", "from_date"],
 		order_by="docstatus desc, from_date desc",
 		as_dict=True,
 	)
-	return row
 
 
 def _update_draft_assignment(name: str, new_base: float):
