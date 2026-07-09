@@ -143,8 +143,16 @@ def create_daily_attendance(target_date: str | None = None) -> dict:
 
 
 def _create_absent(emp, day) -> None:
-	"""Create an absent Attendance row for the employee, ignoring weekends/holidays."""
-	if _is_holiday(emp.holiday_list, day):
+	"""Create an absent Attendance row for the employee.
+
+	Skips employees who have no submitted Shift Assignment for the day (they are
+	not on a clock-in schedule — e.g. salaried staff — so must not be marked
+	absent or deducted), and skips holidays. The holiday list is resolved from
+	the employee, falling back to the company default (employee-level holiday
+	lists are usually blank here)."""
+	if not _has_shift_assignment(emp.name, day):
+		return
+	if _is_holiday(_resolve_holiday_list(emp), day):
 		return
 
 	attendance = frappe.new_doc("Attendance")
@@ -166,6 +174,32 @@ def _is_holiday(holiday_list: str | None, day) -> bool:
 		return False
 	return bool(
 		frappe.db.exists("Holiday", {"parent": holiday_list, "holiday_date": day})
+	)
+
+
+def _resolve_holiday_list(emp) -> str | None:
+	"""Holiday list for the employee, falling back to the company default."""
+	return emp.get("holiday_list") or (
+		frappe.db.get_value("Company", emp.get("company"), "default_holiday_list")
+		if emp.get("company")
+		else None
+	)
+
+
+def _has_shift_assignment(employee: str, day) -> bool:
+	"""True if the employee has a submitted Shift Assignment covering `day`
+	(a blank end_date is treated as ongoing)."""
+	return bool(
+		frappe.db.sql(
+			"""
+			SELECT 1 FROM `tabShift Assignment`
+			WHERE employee = %(emp)s AND docstatus = 1
+			  AND start_date <= %(day)s
+			  AND (end_date IS NULL OR end_date >= %(day)s)
+			LIMIT 1
+			""",
+			{"emp": employee, "day": day},
+		)
 	)
 
 

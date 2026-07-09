@@ -15,8 +15,10 @@ Hook: Salary Slip — before_save / before_insert
 
 from __future__ import annotations
 
+from datetime import timedelta
+
 import frappe
-from frappe.utils import flt, rounded
+from frappe.utils import flt, getdate, rounded
 
 from fours_customizations.commission_handler import compute_employee_commission
 from fours_customizations.fours_customizations.doctype.four_s_industries_settings.four_s_industries_settings import (
@@ -77,27 +79,50 @@ def calculate_and_add_deductions(doc, method=None):
 
 # ── attendance ──────────────────────────────────────────────────────────────
 
+_ATTENDANCE_COMPONENTS = (
+	"Absent Deduction",
+	"Late Deduction",
+	"Early Exit Deduction",
+	"No Checkout Deduction",
+)
+
+
 def _apply_attendance_deductions(doc, designation):
-	records = frappe.get_all(
-		"Attendance",
-		filters={
-			"employee": doc.employee,
-			"attendance_date": ["between", [doc.start_date, doc.end_date]],
-			"docstatus": 1,
-		},
-		fields=["name", "status", "in_time", "out_time", "late_entry", "early_exit"],
+	"""Attendance deductions, gated by shift assignment and holidays.
+
+	Only days on which the employee has a submitted Shift Assignment AND which
+	are not holidays count. Employees with no shift assignment in the period
+	(e.g. salaried staff who never clock in) are never deducted. Idempotent:
+	components drop to zero — and their rows are removed — when nothing qualifies,
+	so a recompute (or a corrected shift/holiday setup) self-heals.
+	"""
+	start, end = getdate(doc.start_date), getdate(doc.end_date)
+	eligible_dates = _shift_assigned_dates(doc.employee, start, end) - _holiday_dates(
+		doc.employee, doc.company, start, end
 	)
 
 	absent = late = early = no_co = 0
-	for att in records:
-		if att.status == "Absent":
-			absent += 1
-		if att.late_entry == 1:
-			late += 1
-		if att.early_exit == 1:
-			early += 1
-		if att.status in ("Present", "Half Day") and not att.out_time:
-			no_co += 1
+	if eligible_dates:
+		records = frappe.get_all(
+			"Attendance",
+			filters={
+				"employee": doc.employee,
+				"attendance_date": ["between", [start, end]],
+				"docstatus": 1,
+			},
+			fields=["name", "status", "attendance_date", "out_time", "late_entry", "early_exit"],
+		)
+		for att in records:
+			if getdate(att.attendance_date) not in eligible_dates:
+				continue
+			if att.status == "Absent":
+				absent += 1
+			if att.late_entry == 1:
+				late += 1
+			if att.early_exit == 1:
+				early += 1
+			if att.status in ("Present", "Half Day") and not att.out_time:
+				no_co += 1
 
 	mapping = {
 		"Absent Deduction": absent * flt(designation.absent_deduction or 0),
@@ -106,10 +131,52 @@ def _apply_attendance_deductions(doc, designation):
 		"No Checkout Deduction": no_co * flt(designation.no_checkout_deduction or 0),
 	}
 
-	for component, amount in mapping.items():
-		if amount <= 0:
-			continue
-		_upsert(doc.deductions, component, amount, doc, "deductions")
+	for component in _ATTENDANCE_COMPONENTS:
+		amount = flt(mapping.get(component))
+		if amount > 0:
+			_upsert(doc.deductions, component, amount, doc, "deductions")
+		else:
+			_remove_component_row(doc, "deductions", component)
+
+
+def _shift_assigned_dates(employee, start, end) -> set:
+	"""Set of dates in [start, end] on which the employee has a submitted Shift
+	Assignment. Handles both per-day rows and open-ended / ranged assignments
+	(a blank end_date is treated as ongoing)."""
+	rows = frappe.get_all(
+		"Shift Assignment",
+		filters={
+			"employee": employee,
+			"docstatus": 1,
+			"start_date": ["<=", end],
+		},
+		fields=["start_date", "end_date"],
+	)
+	dates: set = set()
+	for row in rows:
+		s = max(getdate(row.start_date), start)
+		e = min(getdate(row.end_date) if row.end_date else end, end)
+		day = s
+		while day <= e:
+			dates.add(day)
+			day += timedelta(days=1)
+	return dates
+
+
+def _holiday_dates(employee, company, start, end) -> set:
+	"""Holiday dates in [start, end] from the employee's Holiday List, falling
+	back to the company default."""
+	holiday_list = frappe.db.get_value("Employee", employee, "holiday_list") or (
+		frappe.db.get_value("Company", company, "default_holiday_list") if company else None
+	)
+	if not holiday_list:
+		return set()
+	rows = frappe.get_all(
+		"Holiday",
+		filters={"parent": holiday_list, "holiday_date": ["between", [start, end]]},
+		fields=["holiday_date"],
+	)
+	return {getdate(r.holiday_date) for r in rows}
 
 
 # ── employee salary deductions ──────────────────────────────────────────────
