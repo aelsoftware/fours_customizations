@@ -159,6 +159,9 @@ doc_events = {
 	"Salary Slip": {
 		"before_save": "fours_customizations.salary_slip_handler.calculate_and_add_deductions",
 		"before_insert": "fours_customizations.salary_slip_handler.calculate_and_add_deductions",
+		# Re-apply at submit too: ERPNext's submit-time calculate_net_pay rebuilds
+		# the component tables and drops our attendance/overtime/commission rows.
+		"before_submit": "fours_customizations.salary_slip_handler.calculate_and_add_deductions",
 	},
 	"Sales Invoice": {
 		"on_submit": "fours_customizations.sales_invoice_handler.on_submit",

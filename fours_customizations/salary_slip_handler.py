@@ -25,8 +25,16 @@ from fours_customizations.fours_customizations.doctype.four_s_industries_setting
 
 
 def calculate_and_add_deductions(doc, method=None):
-	"""Add attendance deductions, overtime, and commission to the salary slip."""
-	if doc.docstatus != 0:
+	"""Add attendance deductions, overtime, and commission to the salary slip.
+
+	Runs on draft saves AND at submit time. ERPNext re-runs its own
+	calculate_net_pay during the submit-time validate, which rebuilds the
+	earnings/deductions tables and drops the attendance / overtime / commission
+	rows we add while the slip is a draft. Re-applying at submit (docstatus 1)
+	keeps them on the final, submitted slip — otherwise the accruals posted on
+	submit omit every attendance deduction. Cancelled/amended states are skipped.
+	"""
+	if doc.docstatus not in (0, 1):
 		return
 	if not doc.employee or not doc.start_date or not doc.end_date:
 		return
