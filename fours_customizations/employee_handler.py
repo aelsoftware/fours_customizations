@@ -69,30 +69,28 @@ def on_update(doc, method=None):
 
 def _sync_shift_assignment(doc, previous):
 	shift = doc.default_shift
-	if not shift:
-		return  # not on a shift schedule → nothing to assign
+	prev_shift = previous.default_shift if previous is not None else None
+	today = getdate(nowdate())
 
-	# Only act when the shift is newly set or changed.
-	if previous is not None and previous.default_shift == doc.default_shift:
+	# Shift cleared (was set, now empty) → cancel the current/future assignment(s)
+	# so the employee ends up with no active shift (e.g. drivers who are not
+	# always around and should not be subject to attendance deductions).
+	if not shift:
+		if prev_shift:
+			_cancel_current_future_assignments(doc.name, today)
 		return
 
-	today = getdate(nowdate())
+	# Only act when the shift is newly set or changed.
+	if prev_shift == shift and previous is not None:
+		return
+
 	doj = getdate(doc.date_of_joining) if doc.date_of_joining else None
 	from_date = doj if (doj and doj > today) else today
 
 	# Cancel any current or future submitted assignments so the new one doesn't
 	# overlap and the employee ends up with a single active assignment. Past
 	# assignments (already ended) are left for the historical record.
-	existing = frappe.get_all(
-		"Shift Assignment",
-		filters={"employee": doc.name, "docstatus": 1},
-		fields=["name", "end_date"],
-	)
-	for row in existing:
-		if row.end_date is None or getdate(row.end_date) >= from_date:
-			sa = frappe.get_doc("Shift Assignment", row.name)
-			sa.flags.ignore_permissions = True
-			sa.cancel()
+	_cancel_current_future_assignments(doc.name, from_date)
 
 	sa = frappe.new_doc("Shift Assignment")
 	sa.employee = doc.name
@@ -105,6 +103,28 @@ def _sync_shift_assignment(doc, previous):
 	sa.insert(ignore_permissions=True)
 	sa.submit()
 	frappe.msgprint(f"Shift Assignment {sa.name} created for shift '{shift}'.", alert=True)
+
+
+def _cancel_current_future_assignments(employee, from_date):
+	"""Cancel submitted Shift Assignments for `employee` that are open-ended or
+	end on/after `from_date`. Past assignments are left intact. Assignments that
+	cannot be cancelled (e.g. linked to an Employee Checkin) are skipped and
+	logged rather than raising."""
+	for row in frappe.get_all(
+		"Shift Assignment",
+		filters={"employee": employee, "docstatus": 1},
+		fields=["name", "end_date"],
+	):
+		if row.end_date is None or getdate(row.end_date) >= from_date:
+			try:
+				sa = frappe.get_doc("Shift Assignment", row.name)
+				sa.flags.ignore_permissions = True
+				sa.cancel()
+			except Exception:
+				frappe.log_error(
+					frappe.get_traceback(),
+					f"4S Employee: could not cancel Shift Assignment {row.name}",
+				)
 
 
 # ── Salary Structure Assignment ──────────────────────────────────────────────
