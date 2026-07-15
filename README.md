@@ -18,6 +18,17 @@ Calculate and pay overtime based on designation-specific rates:
 - **Hourly rate configuration** - Different rates for different job roles
 - **Independent of shift** - Works separately from ERPNext's Overtime Type system
 
+### 3. **Payroll Printout (PDF / Excel)**
+A **Print Payroll** button on Payroll Entry that appears once all of the entry's
+salary slips have been cancelled (when the final figures are frozen):
+- **Print PDF** - landscape payroll sheet, opened inline for direct printing
+- **Export Excel** - the same sheet as a styled .xlsx download
+- Columns: Employee, Designation, Basic, Sales Commission, Overtime Pay,
+  Total Earnings, Late / No Checkout / Early Exit / Absent / Other / Total
+  Deductions, Net Pay, Days Absent, Early Exit Days, No Checkout Days,
+  Overtime Hours
+- Styled with the 4S Industries brand colours (green `#8FC643` / black `#221E1F`)
+
 ## Installation
 
 ### Prerequisites
