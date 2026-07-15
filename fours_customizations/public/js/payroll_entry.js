@@ -1,6 +1,6 @@
-// "Print Payroll" button — shows once every salary slip of the entry has been
-// cancelled, and offers the payroll sheet as an inline PDF (printable) or an
-// Excel download.
+// "Print Payroll" button — shows in every document state (draft, submitted,
+// cancelled) as long as the entry has salary slips, and offers the payroll
+// sheet as an inline PDF (printable) or an Excel download.
 frappe.ui.form.on("Payroll Entry", {
 	refresh(frm) {
 		if (frm.is_new()) return;

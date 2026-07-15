@@ -82,12 +82,12 @@ COLUMNS = [
 
 @frappe.whitelist()
 def get_print_allowed(payroll_entry: str) -> dict:
-	"""The form script asks this on refresh: the button shows only when the
-	entry has salary slips and every one of them is cancelled."""
+	"""The form script asks this on refresh: the button shows in every state of
+	the Payroll Entry (draft, submitted, cancelled) as long as it has at least
+	one salary slip to print."""
 	frappe.has_permission("Payroll Entry", "read", payroll_entry, throw=True)
 	total = frappe.db.count("Salary Slip", {"payroll_entry": payroll_entry})
-	cancelled = frappe.db.count("Salary Slip", {"payroll_entry": payroll_entry, "docstatus": 2})
-	return {"allowed": bool(total and total == cancelled), "total": total, "cancelled": cancelled}
+	return {"allowed": bool(total), "total": total}
 
 
 @frappe.whitelist()
@@ -121,9 +121,9 @@ def download_payroll_pdf(payroll_entry: str):
 def _get_payroll_rows(pe) -> tuple[list[dict], dict]:
 	"""One row per employee of the Payroll Entry, plus a totals dict.
 
-	Cancelled slips are the normal case here (the button only shows once all
-	slips are cancelled), so both submitted and cancelled slips qualify; when
-	an employee has several (e.g. amended), the most recently created wins.
+	The printout is available in every document state, so slips in any
+	docstatus qualify — draft (0), submitted (1) and cancelled (2); when an
+	employee has several (e.g. amended), the most recently created wins.
 	"""
 	slips = _latest_slips(pe.name)
 	if not slips:
@@ -173,7 +173,7 @@ def _get_payroll_rows(pe) -> tuple[list[dict], dict]:
 def _latest_slips(payroll_entry: str) -> list:
 	slips = frappe.get_all(
 		"Salary Slip",
-		filters={"payroll_entry": payroll_entry, "docstatus": ["in", [1, 2]]},
+		filters={"payroll_entry": payroll_entry, "docstatus": ["in", [0, 1, 2]]},
 		fields=[
 			"name", "employee", "employee_name", "designation",
 			"start_date", "end_date",
