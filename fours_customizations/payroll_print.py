@@ -39,14 +39,24 @@ BRAND_GREEN = "8FC643"
 BRAND_BLACK = "221E1F"
 BRAND_GREEN_TINT = "F1F8E3"  # light tint for zebra rows
 
-OVERTIME_COMPONENT = "Designation Overtime Pay"
+# Overtime earning. The active structures use "Designation Overtime Pay"; the
+# manual "Late Exit (Over Time)" earning is treated as overtime too so it shows
+# in the Overtime Pay column rather than vanishing into the gross total only.
+_OVERTIME_COMPONENTS = ("Designation Overtime Pay", "Late Exit (Over Time)")
 
-_ATTENDANCE_DEDUCTION_COMPONENTS = (
-	"Late Deduction",
-	"No Checkout Deduction",
-	"Early Exit Deduction",
-	"Absent Deduction",
-)
+# Each attendance-deduction column → the salary components that feed it. The
+# active "4s Salary Structure with Deductions" (and the current slips) use the
+# canonical "* Deduction" names; the legacy variants (Missed Checkout, Early
+# Exit, Absence) are aliased so an older or alternate structure never leaks an
+# attendance deduction into "Other Deductions". Alias groups are disjoint, so
+# nothing is double-counted. Verified against multax.kit.africa: the June 2026
+# run uses Absent / Late / Early Exit / No Checkout Deduction.
+_ATTENDANCE_DEDUCTIONS = {
+	"late_deduction": ("Late Deduction",),
+	"no_checkout_deduction": ("No Checkout Deduction", "Missed Checkout"),
+	"early_exit_deduction": ("Early Exit Deduction", "Early Exit"),
+	"absent_deduction": ("Absent Deduction", "Absence"),
+}
 
 # (row key, column label, kind) — kind drives alignment & number format.
 COLUMNS = [
@@ -127,9 +137,13 @@ def _get_payroll_rows(pe) -> tuple[list[dict], dict]:
 		earnings = components.get(slip.name, {}).get("earnings", {})
 		deductions = components.get(slip.name, {}).get("deductions", {})
 
-		attendance_deductions = sum(
-			flt(deductions.get(c)) for c in _ATTENDANCE_DEDUCTION_COMPONENTS
-		)
+		attendance = {
+			key: sum(flt(deductions.get(name)) for name in names)
+			for key, names in _ATTENDANCE_DEDUCTIONS.items()
+		}
+		# Everything on the slip that isn't one of the aliased attendance
+		# deductions (loans, advances, shortages, …) is "Other Deductions".
+		other_deductions = flt(slip.total_deduction) - sum(attendance.values())
 		counts = _attendance_counts(slip.employee, slip.start_date, slip.end_date, pe.company)
 
 		rows.append({
@@ -137,13 +151,13 @@ def _get_payroll_rows(pe) -> tuple[list[dict], dict]:
 			"designation": slip.designation or "",
 			"basic": _basic_amount(slip, earnings),
 			"sales_commission": flt(earnings.get(commission_component)),
-			"overtime_pay": flt(earnings.get(OVERTIME_COMPONENT)),
+			"overtime_pay": sum(flt(earnings.get(c)) for c in _OVERTIME_COMPONENTS),
 			"total_earnings": flt(slip.gross_pay),
-			"late_deduction": flt(deductions.get("Late Deduction")),
-			"no_checkout_deduction": flt(deductions.get("No Checkout Deduction")),
-			"early_exit_deduction": flt(deductions.get("Early Exit Deduction")),
-			"absent_deduction": flt(deductions.get("Absent Deduction")),
-			"other_deductions": flt(flt(slip.total_deduction) - attendance_deductions, 2),
+			"late_deduction": attendance["late_deduction"],
+			"no_checkout_deduction": attendance["no_checkout_deduction"],
+			"early_exit_deduction": attendance["early_exit_deduction"],
+			"absent_deduction": attendance["absent_deduction"],
+			"other_deductions": flt(other_deductions, 2),
 			"total_deductions": flt(slip.total_deduction),
 			"net_pay": flt(slip.net_pay),
 			"days_absent": counts["absent"],
