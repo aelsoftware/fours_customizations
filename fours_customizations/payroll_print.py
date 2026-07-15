@@ -385,7 +385,7 @@ def _build_pdf_html(pe, rows: list[dict], totals: dict) -> str:
 		)
 		body_rows.append(f"<tr>{cells}</tr>")
 
-	total_cells = ["<td>TOTAL</td>"]
+	total_cells = ['<td class="label">TOTAL</td>']
 	for key, _label, kind in COLUMNS[1:]:
 		total_cells.append(
 			f'<td class="num">{_fmt(totals[key], kind)}</td>' if kind != "text" else "<td></td>"
@@ -393,6 +393,7 @@ def _build_pdf_html(pe, rows: list[dict], totals: dict) -> str:
 
 	return f"""
 <style>
+	* {{ -webkit-print-color-adjust: exact; print-color-adjust: exact; }}
 	body {{ font-family: "Helvetica Neue", Helvetica, Arial, sans-serif; color: #{BRAND_BLACK}; margin: 0; }}
 	.band {{ border-bottom: 4px solid #{BRAND_GREEN}; padding: 6px 0 10px 0; }}
 	.band table {{ width: 100%; border: none; }}
@@ -408,8 +409,11 @@ def _build_pdf_html(pe, rows: list[dict], totals: dict) -> str:
 	table.payroll td {{ border: 1px solid #DDDDDD; padding: 4px; }}
 	table.payroll tbody tr:nth-child(even) td {{ background: #{BRAND_GREEN_TINT}; }}
 	td.num {{ text-align: right; white-space: nowrap; }}
-	tr.totals td {{ background: #{BRAND_BLACK}; color: #FFFFFF; font-weight: bold;
-		border-color: #{BRAND_BLACK}; }}
+	/* Totals live in <tfoot> so the zebra rule on tbody can never override the
+	   black band (a specificity clash that once made this row invisible). */
+	table.payroll tfoot td {{ background: #{BRAND_BLACK}; color: #FFFFFF; font-weight: bold;
+		border: 1px solid #{BRAND_BLACK}; text-align: right; white-space: nowrap; }}
+	table.payroll tfoot td.label {{ text-align: left; letter-spacing: 1px; }}
 </style>
 <div class="band">
 	<table>
@@ -430,7 +434,7 @@ def _build_pdf_html(pe, rows: list[dict], totals: dict) -> str:
 	<thead><tr>{header_cells}</tr></thead>
 	<tbody>
 		{"".join(body_rows)}
-		<tr class="totals">{"".join(total_cells)}</tr>
 	</tbody>
+	<tfoot><tr>{"".join(total_cells)}</tr></tfoot>
 </table>
 """
