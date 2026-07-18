@@ -429,7 +429,7 @@ def _build_pdf_html(pe, rows: list[dict], totals: dict) -> str:
 	.band td {{ border: none; vertical-align: middle; }}
 	.company {{ font-size: 18px; font-weight: bold; }}
 	.meta {{ font-size: 10px; color: #555; }}
-	.title {{ font-size: 13px; font-weight: bold; color: #{BRAND_GREEN}; text-align: right;
+	.title {{ font-size: 13px; font-weight: bold; color: #{BRAND_BLACK}; text-align: right;
 		text-transform: uppercase; letter-spacing: 2px; }}
 	.period {{ font-size: 10px; text-align: right; color: #{BRAND_BLACK}; }}
 	table.payroll {{ width: 100%; border-collapse: collapse; margin-top: 10px; font-size: 8px; }}
@@ -643,7 +643,7 @@ def _build_attendance_pdf_html(pe, data: dict) -> str:
 	.band td {{ border: none; vertical-align: middle; }}
 	.company {{ font-size: 18px; font-weight: bold; }}
 	.meta {{ font-size: 10px; color: #555; }}
-	.title {{ font-size: 13px; font-weight: bold; color: #{BRAND_GREEN}; text-align: right;
+	.title {{ font-size: 13px; font-weight: bold; color: #{BRAND_BLACK}; text-align: right;
 		text-transform: uppercase; letter-spacing: 2px; }}
 	.period {{ font-size: 10px; text-align: right; }}
 	.emp {{ page-break-inside: avoid; margin-top: 12px; }}
@@ -661,10 +661,14 @@ def _build_attendance_pdf_html(pe, data: dict) -> str:
 	table.logs td.rl, table.logs th.rl {{ background: #{BRAND_BLACK}; color: #FFFFFF; width: 34px;
 		font-weight: bold; }}
 	table.logs td .pin, table.logs td .pout {{ display: block; line-height: 1.35; }}
-	table.logs td .pout {{ color: #555; }}
-	.pin.late {{ color: #C0392B; font-weight: bold; }}
-	.pout.early {{ color: #B9770E; font-weight: bold; }}
-	td.absent {{ background: #FBE4E4; color: #C0392B; font-weight: bold; }}
+	table.logs td .pout {{ color: #333; }}
+	/* Flags use bold + underline, not colour, so late/early stay legible on a
+	   black-and-white printer (hue is lost in greyscale). Colour is a bonus. */
+	.pin.late, .pout.early {{ font-weight: bold; text-decoration: underline;
+		text-underline-offset: 1px; color: #000000; }}
+	.pin.late {{ color: #C0392B; }}
+	.pout.early {{ color: #B9770E; }}
+	td.absent {{ background: #EDEDED; color: #000000; font-weight: bold; }}
 	td.empty {{ background: #F5F5F5; }}
 	.legend {{ margin-top: 10px; font-size: 8px; color: #444; }}
 	.legend b {{ color: #{BRAND_BLACK}; }}
@@ -687,11 +691,10 @@ def _build_attendance_pdf_html(pe, data: dict) -> str:
 </div>
 {"".join(blocks)}
 <div class="legend">
-	Each day shows <b>IN</b> (top) over <b>OUT</b> (bottom).
-	<span class="sw" style="background:#FBE4E4;color:#C0392B;">A</span> Absent &nbsp;
-	<span style="color:#C0392B;font-weight:bold;">red IN</span> = late &nbsp;
-	<span style="color:#B9770E;font-weight:bold;">amber OUT</span> = early exit &nbsp;
-	&mdash; = no checkout
+	Each day shows <b>IN</b> (top) over <b>OUT</b> (bottom). &nbsp;
+	<span class="sw" style="background:#EDEDED;color:#000;font-weight:bold;">A</span> = absent &nbsp;
+	<b><u>underlined</u></b> = flagged (late IN / early exit OUT) &nbsp;
+	<b>&mdash;</b> = no checkout
 </div>
 """
 
