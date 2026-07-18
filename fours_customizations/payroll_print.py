@@ -1,19 +1,21 @@
 """
-payroll_print.py — "Print Payroll" button on Payroll Entry (PDF / Excel).
+payroll_print.py — "Print Payroll" button on Payroll Entry.
 
-The button appears on the Payroll Entry form once every Salary Slip of the
-entry has been cancelled — the point in this site's workflow where the final
-figures are frozen and the physical payroll printout is produced. It offers
-two outputs built from the same dataset:
+The button shows in every document state (draft, submitted, cancelled) as long
+as the entry has salary slips, and offers four outputs — each as an inline
+(printable) landscape PDF or an .xlsx download:
 
-  • Print PDF    — landscape A4, opened inline so the browser print dialog
-                   can be used directly.
-  • Export Excel — one-sheet .xlsx.
+  • Payroll          — one row per employee: earnings, the attendance
+                       deductions, other/total deductions, net pay and the
+                       violation-day / overtime-hour counts, with a totals row.
+  • Attendance Logs  — a monthly punch grid (IN over OUT per day) for every
+                       employee of the entry that has a Shift Assignment in the
+                       period; mirrors the physical "Attend. Logs" sheet.
 
-Both are styled with the 4S Industries brand colours taken from the logo on
-multax.kit.africa: green #8FC643 on black #221E1F.
+All outputs are styled with the 4S Industries brand colours taken from the logo
+on multax.kit.africa: green #8FC643 on black #221E1F.
 
-Columns:
+Payroll columns:
   Employee, Designation, Basic, Sales Commission, Overtime Pay,
   Total Earnings, Late Deduction, No Checkout Deduction,
   Early Exit Deduction, Absent Deduction, Other Deductions,
@@ -26,10 +28,11 @@ from __future__ import annotations
 import base64
 import mimetypes
 import os
+from datetime import timedelta
 from io import BytesIO
 
 import frappe
-from frappe.utils import flt, getdate
+from frappe.utils import flt, get_datetime, getdate
 
 from fours_customizations.fours_customizations.doctype.four_s_industries_settings.four_s_industries_settings import (
 	get_setting,
@@ -113,6 +116,32 @@ def download_payroll_pdf(payroll_entry: str):
 	# straight from the new tab.
 	frappe.local.response.filename = f"Payroll {pe.start_date} to {pe.end_date}.pdf"
 	frappe.local.response.filecontent = get_pdf(_build_pdf_html(pe, rows, totals), {"orientation": "Landscape"})
+	frappe.local.response.type = "pdf"
+
+
+@frappe.whitelist()
+def download_attendance_logs_excel(payroll_entry: str):
+	pe = frappe.get_doc("Payroll Entry", payroll_entry)
+	pe.check_permission("read")
+	data = _attendance_log_data(pe)
+
+	frappe.local.response.filename = f"Attendance Logs {pe.start_date} to {pe.end_date}.xlsx"
+	frappe.local.response.filecontent = _build_attendance_excel(pe, data)
+	frappe.local.response.type = "binary"
+
+
+@frappe.whitelist()
+def download_attendance_logs_pdf(payroll_entry: str):
+	from frappe.utils.pdf import get_pdf
+
+	pe = frappe.get_doc("Payroll Entry", payroll_entry)
+	pe.check_permission("read")
+	data = _attendance_log_data(pe)
+
+	frappe.local.response.filename = f"Attendance Logs {pe.start_date} to {pe.end_date}.pdf"
+	frappe.local.response.filecontent = get_pdf(
+		_build_attendance_pdf_html(pe, data), {"orientation": "Landscape"}
+	)
 	frappe.local.response.type = "pdf"
 
 
@@ -438,3 +467,328 @@ def _build_pdf_html(pe, rows: list[dict], totals: dict) -> str:
 	<tfoot><tr>{"".join(total_cells)}</tr></tfoot>
 </table>
 """
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# Attendance Logs — a monthly punch-log grid (IN over OUT per day) for every
+# employee of the Payroll Entry who has a Shift Assignment in the period. PDF
+# and Excel, same 4S branding. Mirrors the physical "Attend. Logs" sheet.
+# ═════════════════════════════════════════════════════════════════════════════
+
+# Days per strip in the PDF grid — keeps a landscape A4 row readable by
+# splitting a ~30-day month into two half-month strips, as on the paper form.
+_LOG_CHUNK = 16
+
+
+def _hhmm(dt) -> str:
+	"""'HH:MM' from an Attendance in/out datetime; '' when unset."""
+	if not dt:
+		return ""
+	try:
+		return get_datetime(dt).strftime("%H:%M")
+	except Exception:
+		s = str(dt)
+		return s[11:16] if len(s) >= 16 else ""
+
+
+def _attendance_log_data(pe) -> dict:
+	"""Grid data: the period's dates, the shift-assigned employees on this
+	entry, and a {(employee, iso-date): punch} map from submitted Attendance."""
+	start, end = getdate(pe.start_date), getdate(pe.end_date)
+	period_dates = []
+	day = start
+	while day <= end:
+		period_dates.append(day)
+		day += timedelta(days=1)
+
+	entry_employees = _entry_employees(pe.name)
+	if not entry_employees:
+		frappe.throw("No employees found for this Payroll Entry.")
+
+	shift_emps = _shift_assigned_employees(entry_employees, start, end)
+	if not shift_emps:
+		frappe.throw("No employees on this Payroll Entry have a shift assigned in this period.")
+
+	details = frappe.get_all(
+		"Employee",
+		filters={"name": ["in", list(shift_emps)]},
+		fields=["name", "employee_name", "designation", "department", "employee_number"],
+	)
+	employees = sorted(
+		(
+			{
+				"emp": e.name,
+				"name": e.employee_name or e.name,
+				"designation": e.designation or "",
+				"department": e.department or "",
+				"code": e.employee_number or e.name,
+			}
+			for e in details
+		),
+		key=lambda x: (x["name"] or "").lower(),
+	)
+
+	records = frappe.get_all(
+		"Attendance",
+		filters={
+			"employee": ["in", list(shift_emps)],
+			"attendance_date": ["between", [start, end]],
+			"docstatus": 1,
+		},
+		fields=[
+			"employee", "attendance_date", "in_time", "out_time",
+			"status", "late_entry", "early_exit",
+		],
+	)
+	punches: dict = {}
+	for a in records:
+		# Last write wins if a day somehow has duplicates; Attendance is 1/day.
+		punches[(a.employee, str(getdate(a.attendance_date)))] = {
+			"in": _hhmm(a.in_time),
+			"out": _hhmm(a.out_time),
+			"status": a.status or "",
+			"late": bool(a.late_entry),
+			"early": bool(a.early_exit),
+		}
+
+	return {"period_dates": period_dates, "employees": employees, "punches": punches}
+
+
+def _entry_employees(payroll_entry: str) -> list[str]:
+	"""Distinct employees with a salary slip in this entry (any docstatus)."""
+	rows = frappe.get_all(
+		"Salary Slip",
+		filters={"payroll_entry": payroll_entry, "docstatus": ["in", [0, 1, 2]]},
+		fields=["employee"],
+		group_by="employee",
+	)
+	return [r.employee for r in rows if r.employee]
+
+
+def _shift_assigned_employees(employees: list[str], start, end) -> set:
+	"""Subset of *employees* with a submitted Shift Assignment overlapping the
+	period. A blank end_date is treated as ongoing."""
+	rows = frappe.get_all(
+		"Shift Assignment",
+		filters={"employee": ["in", employees], "docstatus": 1, "start_date": ["<=", end]},
+		fields=["employee", "end_date"],
+	)
+	result: set = set()
+	for r in rows:
+		if r.end_date and getdate(r.end_date) < start:
+			continue
+		result.add(r.employee)
+	return result
+
+
+# ── attendance PDF ───────────────────────────────────────────────────────────
+
+def _esc(value) -> str:
+	return frappe.utils.escape_html(str(value or ""))
+
+
+def _punch_cell(punch) -> str:
+	"""One day cell: IN over OUT (two lines), or A for absent, blank if no record."""
+	if not punch:
+		return '<td class="empty"></td>'
+	if punch["status"] == "Absent":
+		return '<td class="absent">A</td>'
+	in_txt = punch["in"] or "&middot;"
+	out_txt = punch["out"] or "&mdash;"
+	in_cls = " late" if punch["late"] else ""
+	out_cls = " early" if punch["early"] else ""
+	return (
+		f'<td><span class="pin{in_cls}">{in_txt}</span>'
+		f'<span class="pout{out_cls}">{out_txt}</span></td>'
+	)
+
+
+def _build_attendance_pdf_html(pe, data: dict) -> str:
+	logo = _logo_data_uri()
+	logo_html = f'<img src="{logo}" style="height:52px;">' if logo else ""
+
+	dates = data["period_dates"]
+	chunks = [dates[i:i + _LOG_CHUNK] for i in range(0, len(dates), _LOG_CHUNK)]
+
+	blocks = []
+	for emp in data["employees"]:
+		strips = []
+		for chunk in chunks:
+			day_cells = "".join(
+				f'<th>{d.day}<span class="wd">{d.strftime("%a")[:2]}</span></th>' for d in chunk
+			)
+			punch_cells = "".join(
+				_punch_cell(data["punches"].get((emp["emp"], str(d)))) for d in chunk
+			)
+			strips.append(
+				'<table class="logs">'
+				f'<tr class="drow"><th class="rl">Day</th>{day_cells}</tr>'
+				f'<tr class="prow"><td class="rl">IN<br>OUT</td>{punch_cells}</tr>'
+				"</table>"
+			)
+		sub = " &middot; ".join(x for x in (emp["designation"], emp["department"]) if x)
+		blocks.append(
+			'<div class="emp">'
+			f'<div class="emp-head"><span class="eid">{_esc(emp["code"])}</span> '
+			f'{_esc(emp["name"])} <span class="sub">{_esc(sub)}</span></div>'
+			f'{"".join(strips)}</div>'
+		)
+
+	return f"""
+<style>
+	* {{ -webkit-print-color-adjust: exact; print-color-adjust: exact; }}
+	body {{ font-family: "Helvetica Neue", Helvetica, Arial, sans-serif; color: #{BRAND_BLACK}; margin: 0; }}
+	.band {{ border-bottom: 4px solid #{BRAND_GREEN}; padding: 6px 0 10px 0; }}
+	.band table {{ width: 100%; border: none; }}
+	.band td {{ border: none; vertical-align: middle; }}
+	.company {{ font-size: 18px; font-weight: bold; }}
+	.meta {{ font-size: 10px; color: #555; }}
+	.title {{ font-size: 13px; font-weight: bold; color: #{BRAND_GREEN}; text-align: right;
+		text-transform: uppercase; letter-spacing: 2px; }}
+	.period {{ font-size: 10px; text-align: right; }}
+	.emp {{ page-break-inside: avoid; margin-top: 12px; }}
+	.emp-head {{ background: #{BRAND_BLACK}; color: #FFFFFF; font-size: 10px; font-weight: bold;
+		padding: 4px 8px; }}
+	.emp-head .eid {{ background: #{BRAND_GREEN}; color: #{BRAND_BLACK}; padding: 1px 6px;
+		border-radius: 3px; margin-right: 6px; }}
+	.emp-head .sub {{ font-weight: normal; color: #CFE8A6; }}
+	table.logs {{ width: 100%; border-collapse: collapse; margin-top: 3px; font-size: 7px;
+		table-layout: fixed; }}
+	table.logs th, table.logs td {{ border: 1px solid #CCCCCC; text-align: center; padding: 1px;
+		overflow: hidden; }}
+	table.logs tr.drow th {{ background: #{BRAND_GREEN}; color: #{BRAND_BLACK}; font-weight: bold; }}
+	table.logs th .wd {{ display: block; font-weight: normal; font-size: 6px; color: #3a5a12; }}
+	table.logs td.rl, table.logs th.rl {{ background: #{BRAND_BLACK}; color: #FFFFFF; width: 34px;
+		font-weight: bold; }}
+	table.logs td .pin, table.logs td .pout {{ display: block; line-height: 1.35; }}
+	table.logs td .pout {{ color: #555; }}
+	.pin.late {{ color: #C0392B; font-weight: bold; }}
+	.pout.early {{ color: #B9770E; font-weight: bold; }}
+	td.absent {{ background: #FBE4E4; color: #C0392B; font-weight: bold; }}
+	td.empty {{ background: #F5F5F5; }}
+	.legend {{ margin-top: 10px; font-size: 8px; color: #444; }}
+	.legend b {{ color: #{BRAND_BLACK}; }}
+	.legend .sw {{ display: inline-block; padding: 0 5px; margin: 0 3px; border-radius: 2px; }}
+</style>
+<div class="band">
+	<table>
+		<tr>
+			<td style="width:60px;">{logo_html}</td>
+			<td>
+				<div class="company">{_esc(pe.company)}</div>
+				<div class="meta">{_esc(pe.name)}</div>
+			</td>
+			<td>
+				<div class="title">Attendance Logs</div>
+				<div class="period">{pe.start_date} to {pe.end_date}</div>
+			</td>
+		</tr>
+	</table>
+</div>
+{"".join(blocks)}
+<div class="legend">
+	Each day shows <b>IN</b> (top) over <b>OUT</b> (bottom).
+	<span class="sw" style="background:#FBE4E4;color:#C0392B;">A</span> Absent &nbsp;
+	<span style="color:#C0392B;font-weight:bold;">red IN</span> = late &nbsp;
+	<span style="color:#B9770E;font-weight:bold;">amber OUT</span> = early exit &nbsp;
+	&mdash; = no checkout
+</div>
+"""
+
+
+# ── attendance Excel ─────────────────────────────────────────────────────────
+
+def _build_attendance_excel(pe, data: dict) -> bytes:
+	import openpyxl
+	from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+	from openpyxl.utils import get_column_letter
+
+	dates = data["period_dates"]
+	wb = openpyxl.Workbook()
+	ws = wb.active
+	ws.title = "Attendance Logs"
+	n_cols = 1 + len(dates)  # label column + one per day
+
+	green = PatternFill("solid", fgColor=BRAND_GREEN)
+	black = PatternFill("solid", fgColor=BRAND_BLACK)
+	absent_fill = PatternFill("solid", fgColor="FBE4E4")
+	white_bold = Font(bold=True, color="FFFFFF")
+	center = Alignment(horizontal="center", vertical="center")
+	thin = Side(style="thin", color="CCCCCC")
+	border = Border(left=thin, right=thin, top=thin, bottom=thin)
+
+	# Title band
+	ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=n_cols)
+	c = ws.cell(row=1, column=1, value=f"{pe.company} — Attendance Logs")
+	c.font = Font(bold=True, size=14, color="FFFFFF")
+	c.fill = black
+	c.alignment = center
+	for col in range(2, n_cols + 1):
+		ws.cell(row=1, column=col).fill = black
+	ws.merge_cells(start_row=2, start_column=1, end_row=2, end_column=n_cols)
+	c = ws.cell(row=2, column=1, value=f"{pe.start_date} to {pe.end_date}  ({pe.name})")
+	c.font = Font(bold=True, color=BRAND_BLACK)
+	c.fill = green
+	c.alignment = center
+	for col in range(2, n_cols + 1):
+		ws.cell(row=2, column=col).fill = green
+
+	row = 4
+	for emp in data["employees"]:
+		# Employee header (merged, black band)
+		ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=n_cols)
+		sub = " · ".join(x for x in (emp["designation"], emp["department"]) if x)
+		hc = ws.cell(row=row, column=1, value=f"[{emp['code']}]  {emp['name']}  —  {sub}")
+		hc.font = white_bold
+		hc.fill = black
+		for col in range(2, n_cols + 1):
+			ws.cell(row=row, column=col).fill = black
+		row += 1
+
+		# Day-number header
+		day_row = row
+		lc = ws.cell(row=row, column=1, value="Date")
+		lc.font = Font(bold=True, color=BRAND_BLACK)
+		lc.fill = green
+		lc.border = border
+		for i, d in enumerate(dates, start=2):
+			cell = ws.cell(row=row, column=i, value=d.day)
+			cell.font = Font(bold=True, color=BRAND_BLACK, size=9)
+			cell.fill = green
+			cell.alignment = center
+			cell.border = border
+		row += 1
+
+		# IN and OUT rows
+		for label, key in (("IN", "in"), ("OUT", "out")):
+			lc = ws.cell(row=row, column=1, value=label)
+			lc.font = white_bold
+			lc.fill = black
+			lc.alignment = center
+			lc.border = border
+			for i, d in enumerate(dates, start=2):
+				punch = data["punches"].get((emp["emp"], str(d)))
+				value = ""
+				cell = ws.cell(row=row, column=i)
+				if punch:
+					if punch["status"] == "Absent":
+						value = "A" if label == "IN" else ""
+						cell.fill = absent_fill
+					else:
+						value = punch[key]
+				cell.value = value
+				cell.alignment = center
+				cell.border = border
+				cell.font = Font(size=9)
+			row += 1
+		row += 1  # blank spacer between employees
+
+	# Column widths
+	ws.column_dimensions["A"].width = 12
+	for i in range(2, n_cols + 1):
+		ws.column_dimensions[get_column_letter(i)].width = 7
+	ws.freeze_panes = "B4"
+
+	buf = BytesIO()
+	wb.save(buf)
+	return buf.getvalue()

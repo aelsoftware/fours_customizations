@@ -1,6 +1,7 @@
 // "Print Payroll" button — shows in every document state (draft, submitted,
-// cancelled) as long as the entry has salary slips, and offers the payroll
-// sheet as an inline PDF (printable) or an Excel download.
+// cancelled) as long as the entry has salary slips. Offers the payroll sheet
+// and the attendance-logs sheet, each as an inline PDF (printable) or an
+// Excel download.
 frappe.ui.form.on("Payroll Entry", {
 	refresh(frm) {
 		if (frm.is_new()) return;
@@ -21,13 +22,23 @@ frappe.ui.form.on("Payroll Entry", {
 				};
 
 				frm.add_custom_button(
-					__("Print PDF"),
+					__("Payroll (PDF)"),
 					() => download("download_payroll_pdf"),
 					__("Print Payroll")
 				);
 				frm.add_custom_button(
-					__("Export Excel"),
+					__("Payroll (Excel)"),
 					() => download("download_payroll_excel"),
+					__("Print Payroll")
+				);
+				frm.add_custom_button(
+					__("Attendance Logs (PDF)"),
+					() => download("download_attendance_logs_pdf"),
+					__("Print Payroll")
+				);
+				frm.add_custom_button(
+					__("Attendance Logs (Excel)"),
+					() => download("download_attendance_logs_excel"),
 					__("Print Payroll")
 				);
 			});
