@@ -170,6 +170,11 @@ doc_events = {
 		"on_submit": "fours_customizations.sales_invoice_handler.on_submit",
 		"before_submit": "fours_customizations.sales_invoice_handler.before_submit",
 		"before_save": "fours_customizations.sales_invoice_handler.before_save",
+		# Failsafe: never let an invoice be cancelled while a submitted Delivery
+		# Note still holds its stock. A doc_event fires on every cancellation
+		# route and survives ignore_links / ignore_permissions, so it holds even
+		# where the native link check is switched off.
+		"before_cancel": "fours_customizations.sales_chain_integrity.validate_no_submitted_delivery_note",
 	},
 	"Sales Order": {
 		"before_submit": "fours_customizations.sales_order_handler.before_submit",

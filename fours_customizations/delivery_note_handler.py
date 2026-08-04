@@ -222,8 +222,32 @@ def _cancel_sales_invoice(si_name: str):
 	deleting the draft DN). ignore_links bypasses the auto-Sales-Order
 	back-pointer (custom_source_sales_invoice) and payment links that would
 	otherwise block the cancel — the order is torn down immediately afterwards.
+
+	Guard: if *another* Delivery Note for this invoice is still submitted, the
+	goods are out and the invoice must stand — cancelling it here would leave
+	the sale reversed in the ledger while the stock stayed deducted. (The Sales
+	Order teardown below has always had the equivalent guard; the invoice path
+	did not, which is how SI-2627-039-3 and six others came apart from their
+	notes.) Because ignore_links is set on this cancel, ERPNext's own check
+	cannot catch it — so it is enforced here and, for every other cancellation
+	route, in sales_chain_integrity.validate_no_submitted_delivery_note.
 	"""
 	if frappe.db.get_value("Sales Invoice", si_name, "docstatus") != 1:
+		return
+
+	from fours_customizations.sales_chain_integrity import (
+		submitted_delivery_notes_for_invoice,
+	)
+
+	still_out = submitted_delivery_notes_for_invoice(si_name)
+	if still_out:
+		frappe.msgprint(
+			f"Sales Invoice {si_name} was left submitted: Delivery Note "
+			f"{', '.join(still_out)} is still submitted, so its stock is out. "
+			f"Return or cancel that Delivery Note first if the invoice must go.",
+			indicator="orange",
+			alert=True,
+		)
 		return
 
 	si = frappe.get_doc("Sales Invoice", si_name)
