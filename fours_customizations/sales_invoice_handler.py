@@ -105,6 +105,13 @@ def _validate_payment_or_credit(doc):
         if doc.get("is_consolidated"):
                 return
 
+        # A supplementary invoice correcting the price of goods already delivered
+        # (see price_adjustment). The credit decision was taken when the original
+        # invoice let the goods go; this only bills the difference, and the
+        # adjustment's own limits are what bound it.
+        if doc.flags.get("allow_unpaid_price_adjustment"):
+                return
+
         # Whitelisted for credit → always allowed.
         if frappe.db.get_value("Customer", doc.customer, "custom_allow_credit"):
                 return
@@ -220,6 +227,12 @@ def on_submit(doc, method=None):
         # This SI return was auto-created from an already-submitted Delivery Note
         # Return — the stock document exists, don't create another one.
         if doc.flags.get("from_dn_return"):
+                return
+
+        # A price-only correction (see price_adjustment): the goods already went
+        # out on the original invoice and nothing moves for this document, so it
+        # must not raise a Delivery Note or a Delivery Note Return.
+        if doc.flags.get("skip_delivery_note"):
                 return
 
         _create_draft_delivery_note(doc)

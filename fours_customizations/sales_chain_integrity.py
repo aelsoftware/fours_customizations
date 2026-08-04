@@ -151,6 +151,109 @@ def delivery_notes_covering_invoice(invoice_name: str) -> list[str]:
 	)
 
 
+def payments_against_invoice(invoice_name: str) -> list[dict]:
+	"""Live money allocated to *invoice_name* — Payment Entries and Journal
+	Entries that point at it, plus any POS payment taken on the invoice itself.
+
+	Cancelling an invoice does not undo the money. The receipt stays, loses the
+	bill it was paying, and turns into an unapplied advance sitting on the
+	customer's account — which is exactly the balance a later sale can be
+	quietly settled against. So the money has to be unwound first, deliberately
+	and on its own audit trail, before the invoice can go.
+	"""
+	if not invoice_name:
+		return []
+
+	allocated = []
+	for row in frappe.get_all(
+		"Payment Entry Reference",
+		filters={"reference_doctype": "Sales Invoice", "reference_name": invoice_name, "docstatus": 1},
+		fields=["parent", "allocated_amount"],
+	):
+		if flt(row.allocated_amount):
+			allocated.append({
+				"voucher_type": "Payment Entry",
+				"voucher": row.parent,
+				"amount": flt(row.allocated_amount),
+			})
+
+	for row in frappe.get_all(
+		"Journal Entry Account",
+		filters={"reference_type": "Sales Invoice", "reference_name": invoice_name, "docstatus": 1},
+		fields=["parent", "credit_in_account_currency", "debit_in_account_currency"],
+	):
+		amount = flt(row.credit_in_account_currency) or flt(row.debit_in_account_currency)
+		if amount:
+			allocated.append({
+				"voucher_type": "Journal Entry",
+				"voucher": row.parent,
+				"amount": amount,
+			})
+
+	# POS / "Include Payment" money banked on the invoice itself.
+	paid_on_invoice = flt(
+		frappe.db.get_value("Sales Invoice", invoice_name, "paid_amount")
+	)
+	if paid_on_invoice:
+		allocated.append({
+			"voucher_type": "Sales Invoice",
+			"voucher": invoice_name,
+			"amount": paid_on_invoice,
+		})
+
+	return allocated
+
+
+def validate_no_payment_allocated(doc, method=None):
+	"""Sales Invoice ``before_cancel`` — refuse to cancel once money has been
+	taken against the invoice.
+
+	Without this, cancelling a paid invoice reverses the sale but leaves the
+	receipt behind as an advance on the customer's account. That is the route
+	by which a cancellation quietly manufactures customer credit, so it is shut
+	off here rather than policed after the fact.
+	"""
+	if doc.get("is_return"):
+		return
+	if doc.flags.get("allow_cancel_with_payment"):
+		# Deliberate, audited override — the money has already been unwound.
+		return
+
+	allocated = payments_against_invoice(doc.name)
+	if not allocated:
+		return
+
+	total = sum(row["amount"] for row in allocated)
+	lines = "".join(
+		f'<li><b>{row["voucher_type"]}</b> '
+		f'<a href="/app/{frappe.scrub(row["voucher_type"]).replace("_", "-")}/{row["voucher"]}">'
+		f'{row["voucher"]}</a> — {frappe.utils.fmt_money(row["amount"], currency=doc.currency)}</li>'
+		for row in allocated
+	)
+	frappe.throw(
+		_(
+			"""
+<div style="font-family:'Segoe UI',Arial,sans-serif;line-height:1.6;color:#222;">
+  <p style="font-size:14px;"><b>This invoice cannot be cancelled — money has been received against it.</b></p>
+  <p>{0} has already been taken against this invoice:</p>
+  <ul>{1}</ul>
+  <p>Cancelling now would reverse the sale but leave that money on the customer's
+     account as an <b>unapplied advance</b> — a credit balance that did not come
+     from any payment they made for something else.</p>
+  <p><b>Do this instead:</b></p>
+  <ol>
+    <li>Wrong amount? Leave the invoice alone and raise a <b>Credit Note</b>
+        (or use <b>Adjust Price</b>) for the difference.</li>
+    <li>Genuinely cancelling the sale? Cancel or re-allocate the payment first,
+        so the refund is recorded on its own, then cancel this invoice.</li>
+  </ol>
+</div>
+"""
+		).format(frappe.utils.fmt_money(total, currency=doc.currency), lines),
+		title=_("Payment already received"),
+	)
+
+
 def validate_no_submitted_delivery_note(doc, method=None):
 	"""Sales Invoice ``before_cancel`` — refuse to cancel while a submitted
 	Delivery Note still holds the stock for this invoice."""
