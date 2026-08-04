@@ -205,9 +205,14 @@ def before_save(doc, method=None):
                 if not dn_parents:
                         return
 
+                # Only a *forward* note in draft means the goods never left, which
+                # is what makes a credit note the wrong instrument. A draft
+                # Delivery Note Return is this credit note's own stock
+                # counterpart — blocking on that would stop the return flow from
+                # ever completing.
                 draft_dn = frappe.db.get_value(
                         "Delivery Note",
-                        {"docstatus": 0, "name": ["in", dn_parents]},
+                        {"docstatus": 0, "is_return": 0, "name": ["in", dn_parents]},
                         "name",
                 )
                 if draft_dn:
