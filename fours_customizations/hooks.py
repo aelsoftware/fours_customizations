@@ -143,6 +143,10 @@ after_migrate = "fours_customizations.install.after_install"
 doc_events = {
 	"Delivery Note": {
 		"before_submit": "fours_customizations.delivery_note_handler.before_submit",
+		# A goods return that has already credited the customer must not be
+		# cancelled out from under its credit note, or they keep the goods and
+		# the money both.
+		"before_cancel": "fours_customizations.sales_chain_integrity.validate_no_credit_note_on_return",
 		"on_submit": "fours_customizations.delivery_note_handler.on_submit",
 		"on_trash": "fours_customizations.delivery_note_handler.on_trash",
 	},
@@ -180,6 +184,9 @@ doc_events = {
 		"before_cancel": [
 			"fours_customizations.sales_chain_integrity.validate_no_submitted_delivery_note",
 			"fours_customizations.sales_chain_integrity.validate_no_payment_allocated",
+			# ...and the mirror: never re-bill a customer for goods already back
+			# on our shelf by cancelling the credit note that paid for them.
+			"fours_customizations.sales_chain_integrity.validate_no_submitted_delivery_return",
 		],
 	},
 	"Sales Order": {

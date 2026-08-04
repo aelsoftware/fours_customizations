@@ -212,6 +212,7 @@ def _create_and_submit_si_return(dn, si_name, si_item_qty, dn_rows):
 	# the correction, once via this return.
 	corrected = effective_rates(si_name)
 	adjusted_rows = []
+	uplift = []
 
 	kept = []
 	for item in si_return.items:
@@ -220,14 +221,35 @@ def _create_and_submit_si_return(dn, si_name, si_item_qty, dn_rows):
 			item.qty = flt(si_item_qty[source_row])  # negative
 			item.delivery_note = dn.name
 			item.dn_detail = dn_rows.get(source_row)
-			rate = corrected.get(source_row)
-			if rate is not None and abs(flt(rate) - flt(item.rate)) > 0.005:
-				adjusted_rows.append((item.item_code, flt(item.rate), flt(rate)))
-				item.rate = flt(rate)
-				item.price_list_rate = flt(rate)
+
+			invoiced = flt(item.rate)
+			target = flt(corrected.get(source_row, invoiced))
+
+			# ERPNext refuses to return a line at more than it was invoiced for.
+			# Where the price was corrected *upwards* the extra revenue sits on a
+			# supplementary invoice, not this one, so this document credits at
+			# most the invoiced rate and the balance is credited separately below.
+			capped = min(target, invoiced)
+			if abs(capped - invoiced) > 0.005:
+				adjusted_rows.append((item.item_code, invoiced, capped))
+				item.rate = capped
+				item.price_list_rate = capped
 				item.discount_percentage = 0
 				item.discount_amount = 0
 				item.margin_rate_or_amount = 0
+			if target > invoiced + 0.005:
+				uplift.append({
+					"item_code": item.item_code,
+					"item_name": item.item_name,
+					"description": item.description,
+					"uom": item.uom,
+					"conversion_factor": flt(item.conversion_factor) or 1.0,
+					"qty": flt(item.qty),  # negative
+					"rate": target - invoiced,
+					"cost_center": item.get("cost_center"),
+					"income_account": item.get("income_account"),
+				})
+				adjusted_rows.append((item.item_code, invoiced, target))
 			kept.append(item)
 	if not kept:
 		return
@@ -246,7 +268,56 @@ def _create_and_submit_si_return(dn, si_name, si_item_qty, dn_rows):
 		f"Delivery Note Return {dn.name}.",
 		alert=True,
 	)
+	if uplift:
+		_credit_price_uplift(dn, si_name, si_return, uplift)
 	_notify_goods_returned(dn, si_name, si_return, adjusted_rows)
+
+
+def _credit_price_uplift(dn, si_name, si_return, uplift):
+	"""Credit the part of the returned value that sits on a supplementary invoice.
+
+	When a price was corrected upwards, the customer was billed twice for the
+	line: the original invoice at the old rate, and a supplementary invoice for
+	the increase. Returning the goods has to give back both. The first is handled
+	by the return credit note; this covers the second.
+
+	It is raised standalone — deliberately not against the original invoice —
+	because ERPNext reads a return's quantities as goods movement, and these
+	goods have already been accounted for by the return itself.
+	"""
+	extra = frappe.new_doc("Sales Invoice")
+	extra.company = si_return.company
+	extra.customer = si_return.customer
+	extra.currency = si_return.currency
+	extra.conversion_rate = flt(si_return.conversion_rate) or 1.0
+	extra.is_return = 1
+	extra.update_stock = 0
+	extra.is_pos = 0
+	extra.set_posting_time = 1
+	extra.posting_date = si_return.posting_date
+	extra.posting_time = si_return.posting_time
+	extra.ignore_pricing_rule = 1
+	extra.custom_price_adjustment_for = si_name
+	extra.custom_credits_delivery_return = dn.name
+	extra.remarks = (
+		f"Price increase credited back on return {dn.name} against {si_name}."
+	)
+	extra.flags.skip_delivery_note = True
+	extra.flags.ignore_permissions = True
+
+	for row in uplift:
+		line = extra.append("items", row)
+		line.price_list_rate = row["rate"]
+		line.discount_percentage = 0
+		line.discount_amount = 0
+
+	extra.insert(ignore_permissions=True)
+	extra.submit()
+	frappe.msgprint(
+		f"Credit note {extra.name} raised for the price increase on returned goods.",
+		alert=True,
+	)
+	return extra
 
 
 def _notify_goods_returned(dn, si_name, si_return, adjusted_rows):

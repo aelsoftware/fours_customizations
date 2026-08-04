@@ -294,6 +294,133 @@ def validate_no_submitted_delivery_note(doc, method=None):
 	)
 
 
+def credit_notes_for_delivery_return(delivery_note: str) -> list[str]:
+	"""Submitted credit notes raised off this Delivery Note Return."""
+	if not delivery_note:
+		return []
+	names = frappe.get_all(
+		"Sales Invoice Item",
+		filters={"delivery_note": delivery_note},
+		pluck="parent",
+		distinct=True,
+	)
+	if not names:
+		return []
+	return frappe.get_all(
+		"Sales Invoice",
+		filters={"name": ["in", names], "docstatus": 1},
+		pluck="name",
+	)
+
+
+def submitted_delivery_returns_for_credit_note(invoice_name: str) -> list[str]:
+	"""Submitted Delivery Note Returns whose goods this credit note paid for."""
+	if not invoice_name:
+		return []
+	names = frappe.get_all(
+		"Sales Invoice Item",
+		filters={"parent": invoice_name, "delivery_note": ["is", "set"]},
+		pluck="delivery_note",
+		distinct=True,
+	)
+	# A credit note raised for the price uplift on returned goods carries no row
+	# level delivery note — linking one would distort the return's billing status
+	# — so it names the return on the header instead.
+	credits_return = frappe.db.get_value(
+		"Sales Invoice", invoice_name, "custom_credits_delivery_return"
+	)
+	if credits_return:
+		names = list(names or []) + [credits_return]
+	if not names:
+		return []
+	return frappe.get_all(
+		"Delivery Note",
+		filters={"name": ["in", names], "is_return": 1, "docstatus": 1},
+		pluck="name",
+	)
+
+
+def validate_no_submitted_delivery_return(doc, method=None):
+	"""Sales Invoice ``before_cancel`` — refuse to cancel a credit note while the
+	goods it credited are back in the store.
+
+	The mirror of the fault this app was built to stop. There, an invoice was
+	cancelled while its Delivery Note kept the stock out. Here, cancelling the
+	credit note would re-bill a customer for goods already sitting back on the
+	shelf — the same divergence between the store and the ledger, arrived at from
+	the opposite direction.
+
+	Price corrections are untouched by this: they credit no goods, so they carry
+	no delivery note and stay freely cancellable.
+	"""
+	if not doc.get("is_return"):
+		return
+	if doc.flags.get("allow_cancel_with_delivery_return"):
+		return
+
+	blocking = submitted_delivery_returns_for_credit_note(doc.name)
+	if not blocking:
+		return
+
+	links = ", ".join(
+		f'<a href="/app/delivery-note/{name}"><b>{name}</b></a>' for name in blocking
+	)
+	frappe.throw(
+		_(
+			"""
+<div style="font-family:'Segoe UI',Arial,sans-serif;line-height:1.6;color:#222;">
+  <p style="font-size:14px;"><b>This credit note cannot be cancelled — the goods are back in the store.</b></p>
+  <p>Delivery Note Return {0} is still <b>submitted</b>, so the stock has already
+     been taken back in.</p>
+  <p>Cancelling this credit note would put the charge back on the customer for
+     goods they have already returned — they would be billed for stock sitting on
+     our own shelf.</p>
+  <p><b>Do this instead:</b> cancel {0} first, then cancel this credit note.</p>
+</div>
+"""
+		).format(links),
+		title=_("Goods already returned"),
+	)
+
+
+def validate_no_credit_note_on_return(doc, method=None):
+	"""Delivery Note ``before_cancel`` — refuse to cancel a goods return while the
+	credit note it produced is still standing.
+
+	Cancelling the return puts the goods back out to the customer. If the credit
+	note stays submitted they keep both the goods and the money — the same
+	divergence as the original fault, only pointing the other way. ERPNext's own
+	link check is not enough here: the teardown paths in this app set
+	``ignore_links``, which switches it off.
+	"""
+	if not doc.get("is_return"):
+		return
+	if doc.flags.get("allow_cancel_with_credit_note"):
+		return
+
+	blocking = credit_notes_for_delivery_return(doc.name)
+	if not blocking:
+		return
+
+	links = ", ".join(
+		f'<a href="/app/sales-invoice/{name}"><b>{name}</b></a>' for name in blocking
+	)
+	frappe.throw(
+		_(
+			"""
+<div style="font-family:'Segoe UI',Arial,sans-serif;line-height:1.6;color:#222;">
+  <p style="font-size:14px;"><b>This goods return cannot be cancelled — the customer has already been credited.</b></p>
+  <p>Credit note {0} was raised from this return and is still submitted.</p>
+  <p>Cancelling now would send the goods back out to the customer while the credit
+     stays on their account — they would keep the goods <b>and</b> the money.</p>
+  <p><b>Do this instead:</b> cancel {0} first, then cancel this return.</p>
+</div>
+"""
+		).format(links),
+		title=_("Customer already credited"),
+	)
+
+
 # ── repair ───────────────────────────────────────────────────────────────────
 
 @frappe.whitelist()

@@ -194,6 +194,42 @@ def effective_rates(invoice_name: str) -> dict:
 	return rates
 
 
+def outstanding_qty(invoice_name: str) -> dict:
+	"""``{Sales Invoice Item row: units the customer still holds}``.
+
+	A price correction may only re-price goods the customer actually still has.
+	Units already handed back were credited at the price in force when they came
+	back, and that transaction is closed. Re-pricing them again would credit the
+	difference a second time on goods that are already sitting in the store.
+	"""
+	si = frappe.get_doc("Sales Invoice", invoice_name)
+	held = {item.name: flt(item.qty) for item in si.items}
+
+	# Goods returns are the credit notes raised against this invoice that are not
+	# price corrections; their rows carry the invoice row they reverse.
+	returns = frappe.get_all(
+		"Sales Invoice",
+		filters={
+			"return_against": invoice_name,
+			"docstatus": 1,
+			"custom_price_adjustment_for": ["is", "not set"],
+		},
+		pluck="name",
+	)
+	if not returns:
+		return held
+
+	for row in frappe.get_all(
+		"Sales Invoice Item",
+		filters={"parent": ["in", returns], "sales_invoice_item": ["is", "set"]},
+		fields=["sales_invoice_item", "qty"],
+	):
+		if row.sales_invoice_item in held:
+			held[row.sales_invoice_item] -= abs(flt(row.qty))
+
+	return {row: max(qty, 0.0) for row, qty in held.items()}
+
+
 # ── the dialog's data ────────────────────────────────────────────────────────
 
 @frappe.whitelist()
@@ -202,8 +238,13 @@ def get_adjustment_context(sales_invoice: str) -> dict:
 	si = frappe.get_doc("Sales Invoice", sales_invoice)
 	si.check_permission("read")
 
+	# Show the price actually in force. If this invoice has been corrected before,
+	# the rate on the row is history and editing against it would compound wrongly.
+	in_force = effective_rates(si.name)
+
 	rows = []
 	for item in si.items:
+		current = flt(in_force.get(item.name, item.rate))
 		rows.append({
 			"item_row": item.name,
 			"idx": item.idx,
@@ -211,8 +252,9 @@ def get_adjustment_context(sales_invoice: str) -> dict:
 			"item_name": item.item_name,
 			"qty": flt(item.qty),
 			"uom": item.uom,
-			"current_rate": flt(item.rate),
-			"amount": flt(item.amount),
+			"invoiced_rate": flt(item.rate),
+			"current_rate": current,
+			"amount": current * flt(item.qty),
 			"buying_rate": _buying_rate(item),
 		})
 
@@ -365,6 +407,12 @@ def create_price_adjustment(sales_invoice: str, rows, reason: str) -> dict:
 	_check_maker_checker(si)
 
 	items_by_row = {item.name: item for item in si.items}
+	# Corrections compound. The baseline is the price in force *now*, not the one
+	# first printed on the invoice — measuring from the original would re-credit
+	# the whole difference on every subsequent correction (1000 → 950 → 900 would
+	# credit 50 then 100, handing back 150 when the customer owes 100 less).
+	in_force = effective_rates(si.name)
+	held = outstanding_qty(si.name)
 	changes, total_delta = [], 0.0
 	for row in rows:
 		item = items_by_row.get(row.get("item_row"))
@@ -373,16 +421,26 @@ def create_price_adjustment(sales_invoice: str, rows, reason: str) -> dict:
 		new_rate = flt(row.get("new_rate"))
 		if new_rate < 0:
 			frappe.throw(_("A price cannot be negative ({0}).").format(item.item_code))
-		delta_rate = new_rate - flt(item.rate)
+		current_rate = flt(in_force.get(item.name, item.rate))
+		delta_rate = new_rate - current_rate
 		if abs(delta_rate) < ROUNDING:
 			continue
-		delta = delta_rate * flt(item.qty)
+
+		qty = flt(held.get(item.name, item.qty))
+		if qty <= 0:
+			frappe.throw(
+				_("{0} has already been returned in full, so there is no longer a "
+				  "price to correct on it. Adjust the credit note instead.").format(item.item_code),
+				title=_("Nothing left to re-price"),
+			)
+
+		delta = delta_rate * qty
 		total_delta += delta
 		changes.append({
 			"item": item,
 			"item_code": item.item_code,
-			"qty": flt(item.qty),
-			"old_rate": flt(item.rate),
+			"qty": qty,
+			"old_rate": current_rate,
 			"new_rate": new_rate,
 			"delta_rate": delta_rate,
 			"delta": delta,

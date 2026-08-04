@@ -192,6 +192,19 @@ def create_sales_invoice_custom_fields():
 				"no_copy": 1,
 				"description": "Set automatically by Adjust Price. The invoice whose price this document corrects.",
 			},
+			{
+				# The goods return this credit note pays for, when it is not itself
+				# the return document. Without it such a note looks like a plain
+				# price correction and could be cancelled, re-billing the customer
+				# for stock already back on our shelf.
+				"fieldname": "custom_credits_delivery_return",
+				"label": "Credits Delivery Return",
+				"fieldtype": "Link",
+				"options": "Delivery Note",
+				"insert_after": "custom_price_adjustment_for",
+				"read_only": 1,
+				"no_copy": 1,
+			},
 		],
 		"Sales Invoice Item": [
 			{
