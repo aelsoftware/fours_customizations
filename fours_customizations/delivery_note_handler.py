@@ -58,7 +58,19 @@ def on_submit(doc, method=None):
 		return
 	if not doc.is_return:
 		return
+	# The store keeper posts the return but is deliberately denied Sales Invoice
+	# access — prices are not theirs to see. The credit note is raised by the
+	# system on their behalf, so the session is elevated for the duration.
+	# frappe.flags.ignore_permissions is not enough: has_permission() consults the
+	# session user and short-circuits only for Administrator, so without this the
+	# whole sync dies on a PermissionError that on_submit would quietly swallow —
+	# goods back on the shelf, customer never credited.
+	actual_user = frappe.session.user
+	saved_flag = frappe.flags.ignore_permissions
 	try:
+		frappe.flags.ignore_permissions = True
+		frappe.set_user("Administrator")
+		doc.flags.posted_by = actual_user
 		_sync_sales_invoice_return(doc)
 	except Exception:
 		frappe.log_error(frappe.get_traceback(), "4S DN return: SI return sync failed")
@@ -68,6 +80,9 @@ def on_submit(doc, method=None):
 			indicator="orange",
 			alert=True,
 		)
+	finally:
+		frappe.set_user(actual_user)
+		frappe.flags.ignore_permissions = saved_flag
 
 
 def on_trash(doc, method=None):
@@ -124,6 +139,9 @@ def _sync_sales_invoice_return(dn):
 				si_detail = si_detail or orig.si_detail
 		if not si_name or not si_detail:
 			continue
+		si_detail = _resolve_si_detail(si_name, si_detail, item.get("item_code"))
+		if not si_detail:
+			continue
 		qty_by_si_item.setdefault(si_name, {})
 		qty_by_si_item[si_name][si_detail] = (
 			qty_by_si_item[si_name].get(si_detail, 0) + flt(item.qty)
@@ -156,10 +174,30 @@ def _sync_sales_invoice_return(dn):
 		)
 
 
+def _resolve_si_detail(si_name, si_detail, item_code):
+	"""Point *si_detail* at a row that really belongs to *si_name*.
+
+	A Delivery Note keeps the ``si_detail`` it was built with. Once its invoice is
+	re-instated by amendment the note is re-pointed at the new invoice, but those
+	row ids still name rows of the cancelled one — so nothing matches and the
+	return silently credits nothing at all. Falling back to the item code finds
+	the equivalent row on the invoice actually in force.
+	"""
+	if frappe.db.exists("Sales Invoice Item", {"name": si_detail, "parent": si_name}):
+		return si_detail
+	if not item_code:
+		return None
+	return frappe.db.get_value(
+		"Sales Invoice Item", {"parent": si_name, "item_code": item_code}, "name"
+	)
+
+
 def _create_and_submit_si_return(dn, si_name, si_item_qty, dn_rows):
 	"""Create a Sales Invoice Return (credit note) from `si_name` covering only
 	the items/quantities on this Delivery Note Return, then submit it."""
 	from erpnext.controllers.sales_and_purchase_return import make_return_doc
+
+	from fours_customizations.price_adjustment import effective_rates
 
 	si_return = make_return_doc("Sales Invoice", si_name)
 	si_return.update_stock = 0
@@ -168,6 +206,13 @@ def _create_and_submit_si_return(dn, si_name, si_item_qty, dn_rows):
 	si_return.posting_date = dn.posting_date
 	si_return.posting_time = dn.posting_time
 
+	# Credit the price the customer was actually left paying, not the one first
+	# printed on the invoice. If the price was corrected after delivery, refunding
+	# the original rate would hand back the overcharge a second time — once via
+	# the correction, once via this return.
+	corrected = effective_rates(si_name)
+	adjusted_rows = []
+
 	kept = []
 	for item in si_return.items:
 		source_row = item.get("sales_invoice_item")
@@ -175,9 +220,19 @@ def _create_and_submit_si_return(dn, si_name, si_item_qty, dn_rows):
 			item.qty = flt(si_item_qty[source_row])  # negative
 			item.delivery_note = dn.name
 			item.dn_detail = dn_rows.get(source_row)
+			rate = corrected.get(source_row)
+			if rate is not None and abs(flt(rate) - flt(item.rate)) > 0.005:
+				adjusted_rows.append((item.item_code, flt(item.rate), flt(rate)))
+				item.rate = flt(rate)
+				item.price_list_rate = flt(rate)
+				item.discount_percentage = 0
+				item.discount_amount = 0
+				item.margin_rate_or_amount = 0
 			kept.append(item)
 	if not kept:
 		return
+	if adjusted_rows:
+		si_return.ignore_pricing_rule = 1
 	si_return.set("items", kept)
 	for idx, item in enumerate(si_return.items, start=1):
 		item.idx = idx
@@ -191,6 +246,36 @@ def _create_and_submit_si_return(dn, si_name, si_item_qty, dn_rows):
 		f"Delivery Note Return {dn.name}.",
 		alert=True,
 	)
+	_notify_goods_returned(dn, si_name, si_return, adjusted_rows)
+
+
+def _notify_goods_returned(dn, si_name, si_return, adjusted_rows):
+	"""Announce a goods return on Slack. Never let this undo the return itself."""
+	try:
+		from fours_customizations.notifications import send_slack
+
+		lines = "\n".join(
+			f"  • {item.item_code}: {abs(flt(item.qty)):g} @ "
+			f"{frappe.utils.fmt_money(flt(item.rate), currency=si_return.currency)}"
+			for item in si_return.items
+		)
+		note = ""
+		if adjusted_rows:
+			note = "\n*Credited at the corrected price:* " + "; ".join(
+				f"{code} {old:,.0f} → {new:,.0f}" for code, old, new in adjusted_rows
+			)
+		send_slack(
+			f"*Goods returned to store*\n"
+			f"*Customer:* {dn.customer}\n"
+			f"*Delivery Note Return:* {dn.name}  (against {dn.return_against or '-'})\n"
+			f"*Original invoice:* {si_name}\n"
+			f"*Credit note raised:* {si_return.name} for "
+			f"{frappe.utils.fmt_money(abs(flt(si_return.grand_total)), currency=si_return.currency)}\n"
+			f"*Posted by:* {dn.flags.get('posted_by') or frappe.session.user}\n"
+			f"{lines}{note}"
+		)
+	except Exception:
+		frappe.log_error(frappe.get_traceback(), "4S DN return: Slack notify failed")
 
 
 # ── helpers — linked document lookup ─────────────────────────────────────────

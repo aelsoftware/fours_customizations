@@ -152,6 +152,48 @@ def _customer_balance(customer, company) -> float:
 	return flt(value[0][0]) if value else 0.0
 
 
+# ── effective price after corrections ────────────────────────────────────────
+
+def effective_rates(invoice_name: str) -> dict:
+	"""``{Sales Invoice Item row: unit price actually charged}`` for *invoice_name*.
+
+	The rate printed on the invoice stops being the truth the moment a price
+	correction is raised against it. Anything that later has to credit the
+	customer — above all a goods return — must use the corrected figure, or the
+	original overcharge gets refunded twice: once by the correction and again by
+	the return.
+
+	Example: 10 units invoiced at 25,000, corrected down to 22,000 by a credit
+	note of 30,000. If the goods then come back and the return credits the
+	original 25,000, the customer is handed 280,000 against a 250,000 sale.
+	"""
+	si = frappe.get_doc("Sales Invoice", invoice_name)
+	rates = {item.name: flt(item.rate) for item in si.items}
+
+	adjustments = frappe.get_all(
+		"Sales Invoice",
+		filters={"custom_price_adjustment_for": invoice_name, "docstatus": 1},
+		pluck="name",
+	)
+	if not adjustments:
+		return rates
+
+	for row in frappe.get_all(
+		"Sales Invoice Item",
+		filters={"parent": ["in", adjustments], "custom_adjusts_si_item": ["is", "set"]},
+		fields=["custom_adjusts_si_item", "qty", "rate"],
+	):
+		target = row.custom_adjusts_si_item
+		if target not in rates:
+			continue
+		# A credit note carries negative quantities at the reduction rate; a
+		# supplementary invoice positive quantities at the increase rate. The
+		# sign of the quantity is therefore the direction of the correction.
+		rates[target] += flt(row.rate) * (1 if flt(row.qty) > 0 else -1)
+
+	return rates
+
+
 # ── the dialog's data ────────────────────────────────────────────────────────
 
 @frappe.whitelist()
@@ -407,6 +449,7 @@ def _apply_common(target, si, reason):
 	target.update_stock = 0
 	target.is_pos = 0
 	target.remarks = f"Price adjustment against {si.name}. Reason: {reason}"
+	target.custom_price_adjustment_for = si.name
 	# The rate on these rows is the *difference*, not a selling price. Left to
 	# itself ERPNext would fetch the price list rate and derive a discount to
 	# reach it — posting the full original value to revenue and the balance to
@@ -432,6 +475,7 @@ def _append_row(target, si, change, qty, rate):
 		"rate": rate,
 		"cost_center": item.get("cost_center"),
 		"warehouse": item.get("warehouse"),
+		"custom_adjusts_si_item": item.name,
 	})
 	if income_account:
 		row.income_account = income_account
@@ -455,7 +499,11 @@ def _build_credit_note(si, changes, reason):
 	credit = frappe.new_doc("Sales Invoice")
 	_apply_common(credit, si, reason)
 	credit.is_return = 1
-	credit.return_against = si.name
+	# Deliberately NOT return_against. ERPNext reads a return's quantities as goods
+	# physically coming back, and these rows carry the full invoiced quantity — so
+	# linking it would mark the whole line as returned and make the store's later,
+	# genuine return impossible to post. Nothing came back here; only the price
+	# changed. The audit link is custom_price_adjustment_for, set in _apply_common.
 
 	for change in changes:
 		# A credit note carries negative quantities; the rate is the per-unit

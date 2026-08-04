@@ -178,6 +178,33 @@ def create_sales_invoice_custom_fields():
 				"mandatory_depends_on": "eval:doc.company == '4S Industries Limited'",
 				"description": "When set, the Sales Team is automatically populated with this person at 100% allocation.",
 			},
+			{
+				# Structural link back to the invoice a price correction belongs to.
+				# The remarks text is not enough: when the goods are later returned,
+				# the credit note has to be raised at the *corrected* price, and that
+				# has to be resolved exactly rather than parsed out of a sentence.
+				"fieldname": "custom_price_adjustment_for",
+				"label": "Price Adjustment For",
+				"fieldtype": "Link",
+				"options": "Sales Invoice",
+				"insert_after": "return_against",
+				"read_only": 1,
+				"no_copy": 1,
+				"description": "Set automatically by Adjust Price. The invoice whose price this document corrects.",
+			},
+		],
+		"Sales Invoice Item": [
+			{
+				# Which row of the original invoice this adjustment row corrects.
+				# Item code alone is ambiguous when the same item appears twice.
+				"fieldname": "custom_adjusts_si_item",
+				"label": "Adjusts Sales Invoice Item",
+				"fieldtype": "Data",
+				"insert_after": "sales_invoice_item",
+				"read_only": 1,
+				"no_copy": 1,
+				"hidden": 1,
+			},
 		],
 	}
 

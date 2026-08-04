@@ -336,16 +336,37 @@ def relink_delivery_note(delivery_note: str, sales_invoice: str) -> dict:
 			).format(delivery_note, ", ".join(sorted(stray)), sales_invoice)
 		)
 
+	# The row-level pointer has to follow the header one. ``si_detail`` names a
+	# row of the *cancelled* invoice, and a Delivery Note Return later matches its
+	# lines by that id — leave it stale and the return finds nothing to credit and
+	# silently raises an empty credit note.
+	rows_on_invoice = {
+		row.item_code: row.name
+		for row in frappe.get_all(
+			"Sales Invoice Item",
+			filters={"parent": sales_invoice},
+			fields=["name", "item_code"],
+		)
+	}
+
 	updated = 0
 	for row in dn.items:
+		changes = {}
 		if row.against_sales_invoice and row.against_sales_invoice != sales_invoice:
+			changes["against_sales_invoice"] = sales_invoice
+
+		new_detail = rows_on_invoice.get(row.item_code)
+		if new_detail and row.get("si_detail") != new_detail:
+			if not frappe.db.exists(
+				"Sales Invoice Item", {"name": row.get("si_detail"), "parent": sales_invoice}
+			):
+				changes["si_detail"] = new_detail
+
+		for field, value in changes.items():
 			frappe.db.set_value(
-				"Delivery Note Item",
-				row.name,
-				"against_sales_invoice",
-				sales_invoice,
-				update_modified=False,
+				"Delivery Note Item", row.name, field, value, update_modified=False
 			)
+		if changes:
 			updated += 1
 
 	return {"delivery_note": delivery_note, "sales_invoice": sales_invoice, "rows_updated": updated}
