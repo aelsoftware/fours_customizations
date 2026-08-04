@@ -95,6 +95,40 @@ def invoice_amendment_chain(invoice_name: str) -> list[str]:
 	return chain
 
 
+def invoice_descendants(invoice_names) -> dict[str, set]:
+	"""{invoice: every invoice amended out of it, at any depth}.
+
+	The forward counterpart of :func:`invoice_amendment_chain`. Repairing a
+	wrongly-cancelled invoice means amending it and submitting the amendment,
+	which lands under a *new* name — while the Delivery Note still references
+	the cancelled one. Without following amendments forward, a repaired pair
+	keeps reporting as broken and the fix looks like it did not work.
+	"""
+	descendants: dict[str, set] = {name: set() for name in invoice_names}
+	# parent → the root(s) it descends from, so depth is resolved in one sweep
+	roots_of = {name: {name} for name in invoice_names}
+	frontier = list(invoice_names)
+	seen = set(frontier)
+
+	while frontier:
+		children = frappe.get_all(
+			"Sales Invoice",
+			filters={"amended_from": ["in", frontier]},
+			fields=["name", "amended_from"],
+		)
+		frontier = []
+		for child in children:
+			if child.name in seen:
+				continue
+			seen.add(child.name)
+			roots = roots_of.get(child.amended_from, set())
+			roots_of[child.name] = roots
+			for root in roots:
+				descendants[root].add(child.name)
+			frontier.append(child.name)
+	return descendants
+
+
 def delivery_notes_covering_invoice(invoice_name: str) -> list[str]:
 	"""Submitted forward Delivery Notes that already shipped this invoice —
 	matched across its whole amendment chain."""
@@ -269,19 +303,32 @@ def get_broken_sales_chains(company: str | None = None) -> list[dict]:
 
 	all_invoices = sorted({si for names in invoices_of.values() for si in names})
 	docstatus_of: dict[str, int] = {}
-	for i in range(0, len(all_invoices), 500):
+
+	# A cancelled invoice that was amended and re-submitted still covers its
+	# note — the sale is on the books under the amended name — so amendments
+	# are followed forward before anything is called orphaned.
+	descendants = invoice_descendants(all_invoices) if all_invoices else {}
+	to_check = sorted(
+		set(all_invoices) | {child for kids in descendants.values() for child in kids}
+	)
+	for i in range(0, len(to_check), 500):
 		for si in frappe.get_all(
 			"Sales Invoice",
-			filters={"name": ["in", all_invoices[i:i + 500]]},
+			filters={"name": ["in", to_check[i:i + 500]]},
 			fields=["name", "docstatus"],
 		):
 			docstatus_of[si.name] = si.docstatus
 
+	def _is_covered(invoice: str) -> bool:
+		if docstatus_of.get(invoice) == 1:
+			return True
+		return any(docstatus_of.get(kid) == 1 for kid in descendants.get(invoice, ()))
+
 	broken = []
 	for dn in dns:
 		linked = invoices_of.get(dn.name) or set()
-		if any(docstatus_of.get(si) == 1 for si in linked):
-			continue  # a live invoice stands behind this note
+		if any(_is_covered(si) for si in linked):
+			continue  # a live invoice (or a live amendment of one) stands behind this note
 		if not linked and flt(dn.per_billed) >= 100:
 			continue  # fully billed through a route we cannot see; not orphaned
 		broken.append({
