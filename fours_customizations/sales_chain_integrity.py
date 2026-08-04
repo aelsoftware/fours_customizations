@@ -79,6 +79,44 @@ def submitted_delivery_notes_for_invoice(invoice_name: str) -> list[str]:
 	return sorted(name for name in live if name not in returned)
 
 
+def invoice_amendment_chain(invoice_name: str) -> list[str]:
+	"""*invoice_name* plus every invoice it was amended from, oldest last.
+
+	A Delivery Note keeps pointing at the invoice it was built from, so after an
+	amendment the note references an *earlier* name in the chain. Anything
+	asking "is this invoice already delivered?" has to look at the whole chain
+	or it will miss the note and deliver the same goods twice.
+	"""
+	chain, seen, current = [], set(), invoice_name
+	while current and current not in seen:
+		chain.append(current)
+		seen.add(current)
+		current = frappe.db.get_value("Sales Invoice", current, "amended_from")
+	return chain
+
+
+def delivery_notes_covering_invoice(invoice_name: str) -> list[str]:
+	"""Submitted forward Delivery Notes that already shipped this invoice —
+	matched across its whole amendment chain."""
+	chain = invoice_amendment_chain(invoice_name)
+	if not chain:
+		return []
+
+	dn_names = frappe.get_all(
+		"Delivery Note Item",
+		filters={"against_sales_invoice": ["in", chain]},
+		pluck="parent",
+		distinct=True,
+	)
+	if not dn_names:
+		return []
+	return frappe.get_all(
+		"Delivery Note",
+		filters={"name": ["in", dn_names], "is_return": 0, "docstatus": 1},
+		pluck="name",
+	)
+
+
 def validate_no_submitted_delivery_note(doc, method=None):
 	"""Sales Invoice ``before_cancel`` — refuse to cancel while a submitted
 	Delivery Note still holds the stock for this invoice."""
@@ -117,6 +155,63 @@ def validate_no_submitted_delivery_note(doc, method=None):
 		).format(links),
 		title=_("Delivery Note still submitted"),
 	)
+
+
+# ── repair ───────────────────────────────────────────────────────────────────
+
+@frappe.whitelist()
+def relink_delivery_note(delivery_note: str, sales_invoice: str) -> dict:
+	"""Point an already-submitted Delivery Note at a re-instated Sales Invoice.
+
+	Used to close the repair after a wrongly-cancelled invoice has been amended
+	and re-submitted: the note still references the cancelled name, so the pair
+	keeps showing up as broken even though the books are right again.
+
+	Only the reference is rewritten — no stock moves, no GL is touched. The new
+	invoice must be submitted, must belong to the same customer and company, and
+	must be in the note's own amendment chain, so this cannot staple a note onto
+	an unrelated sale.
+	"""
+	dn = frappe.get_doc("Delivery Note", delivery_note)
+	si = frappe.get_doc("Sales Invoice", sales_invoice)
+
+	if dn.docstatus != 1:
+		frappe.throw(_("Delivery Note {0} is not submitted.").format(delivery_note))
+	if si.docstatus != 1:
+		frappe.throw(_("Sales Invoice {0} is not submitted.").format(sales_invoice))
+	if dn.customer != si.customer or dn.company != si.company:
+		frappe.throw(
+			_("{0} and {1} are for different customers or companies.").format(
+				delivery_note, sales_invoice
+			)
+		)
+
+	current = {
+		row.against_sales_invoice for row in dn.items if row.against_sales_invoice
+	}
+	chain = set(invoice_amendment_chain(sales_invoice))
+	stray = current - chain
+	if stray:
+		frappe.throw(
+			_(
+				"{0} references {1}, which is not in the amendment chain of {2}. "
+				"Re-linking it would attach the note to an unrelated sale."
+			).format(delivery_note, ", ".join(sorted(stray)), sales_invoice)
+		)
+
+	updated = 0
+	for row in dn.items:
+		if row.against_sales_invoice and row.against_sales_invoice != sales_invoice:
+			frappe.db.set_value(
+				"Delivery Note Item",
+				row.name,
+				"against_sales_invoice",
+				sales_invoice,
+				update_modified=False,
+			)
+			updated += 1
+
+	return {"delivery_note": delivery_note, "sales_invoice": sales_invoice, "rows_updated": updated}
 
 
 # ── audit ────────────────────────────────────────────────────────────────────

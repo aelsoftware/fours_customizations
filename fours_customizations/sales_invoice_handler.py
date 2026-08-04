@@ -237,6 +237,26 @@ def _create_draft_delivery_note(doc):
         if not doc.is_return and all(getattr(item, "dn_detail", None) for item in doc.items):
                 return
 
+        # Never ship the same invoice twice. A submitted Delivery Note keeps
+        # pointing at the invoice it was built from, so after an amendment it
+        # references an earlier name in the chain and the dn_detail check above
+        # cannot see it (dn_detail is no_copy, so an amended invoice loses it).
+        # Without this, re-instating a wrongly-cancelled invoice would raise a
+        # second Delivery Note for goods that already left the store.
+        if not doc.is_return:
+                from fours_customizations.sales_chain_integrity import (
+                        delivery_notes_covering_invoice,
+                )
+
+                already_shipped = delivery_notes_covering_invoice(doc.name)
+                if already_shipped:
+                        frappe.msgprint(
+                                f"No Delivery Note created — {', '.join(already_shipped)} "
+                                f"already delivered this invoice.",
+                                alert=True,
+                        )
+                        return
+
         # Only include items that maintain stock
         stock_item_codes = {
                 row[0] for row in frappe.get_all(
