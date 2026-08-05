@@ -207,6 +207,14 @@ def _create_and_submit_si_return(dn, si_name, si_item_qty, dn_rows):
 	si_return = make_return_doc("Sales Invoice", si_name)
 	si_return.update_stock = 0
 	si_return.is_pos = 0
+	# The credit note must not inherit the invoice's advance allocations. On a
+	# heavily part-paid invoice those rows come across without a usable
+	# reference and ERPNext rejects the whole document — silently, because
+	# on_submit logs and swallows, so the goods come back into stock while the
+	# customer stays billed. The payments belong to the original invoice and
+	# stay there; this note only credits the goods.
+	si_return.set("advances", [])
+	si_return.allocate_advances_automatically = 0
 	si_return.set_posting_time = 1
 	si_return.posting_date = dn.posting_date
 	si_return.posting_time = dn.posting_time
