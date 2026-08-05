@@ -24,10 +24,15 @@ on_trash
        a. Skip if the SO is already cancelled or if other *submitted* DNs
           still exist for it (meaning the SO was partially fulfilled and
           the remaining notes are still live).
-       b. Cancel all submitted Payment Entries whose reference_no = SO name.
-       c. Cancel all submitted Stock Reservation Entries for the SO.
-       d. Cancel the Sales Order itself — leaving it in a state where it
+       b. Cancel all submitted Stock Reservation Entries for the SO.
+       c. Cancel the Sales Order itself — leaving it in a state where it
           can be amended and re-submitted after corrections.
+
+  The customer's **Payment Entries are deliberately left alone**. Deleting a
+  draft note means the paperwork is being redone, not that the money came
+  back; ERPNext unlinks the payment when its invoice is cancelled, so it
+  simply becomes an advance on the account and settles the amended invoice.
+  Cancelling it would mean re-keying a real receipt from memory.
 
   Every step skips documents that aren't currently submitted, so the handler is
   re-runnable and co-exists with the auto-cancel flow (which cancels the invoice
@@ -100,7 +105,7 @@ def on_trash(doc, method=None):
 
 	# ── 2. Cancel Sales Orders (and their dependants) ─────────────────────────
 	for so_name in _get_linked_sales_orders(doc):
-		_cancel_sales_order_chain(so_name, deleted_dn=doc.name)
+		_cancel_sales_order_chain(so_name, deleted_dn=doc.name, cancel_payments=False)
 
 
 # ── DN return → SI return sync ───────────────────────────────────────────────
@@ -409,13 +414,20 @@ def _cancel_sales_invoice(si_name: str):
 	si = frappe.get_doc("Sales Invoice", si_name)
 	si.flags.ignore_permissions = True
 	si.flags.ignore_links = True
+	# Deleting a *draft* note means nothing ever left the store, so this is the
+	# one route where cancelling a paid invoice is safe: the invoice is about to
+	# be amended and re-issued, and the customer's payment stays behind as an
+	# advance to settle the replacement. Cancelling a paid invoice by hand is
+	# still refused (validate_no_payment_allocated) because nothing guarantees a
+	# replacement there, and the advance would just sit on the account.
+	si.flags.allow_cancel_with_payment = True
 	si.cancel()
 	frappe.msgprint(f"Sales Invoice {si_name} cancelled.", alert=True)
 
 
 # ── cancellation chain ────────────────────────────────────────────────────────
 
-def _cancel_sales_order_chain(so_name: str, deleted_dn: str):
+def _cancel_sales_order_chain(so_name: str, deleted_dn: str, cancel_payments: bool = True):
 	"""
 	Cancel everything tied to a Sales Order, then cancel the SO itself.
 
@@ -453,7 +465,25 @@ def _cancel_sales_order_chain(so_name: str, deleted_dn: str):
 		return
 
 	# ── a. Payment Entries ────────────────────────────────────────────────────
-	_cancel_payment_entries(so_name, so.customer, so.company)
+	if cancel_payments:
+		_cancel_payment_entries(so_name, so.customer, so.company)
+	else:
+		# The customer's money is real and stays real. Reversing the receipt
+		# because the paperwork is being redone would mean re-keying it later
+		# from memory; left alone it simply becomes an advance on their account
+		# and settles the amended invoice.
+		kept = frappe.get_all(
+			"Payment Entry",
+			filters={"reference_no": so_name, "party_type": "Customer",
+			         "party": so.customer, "company": so.company, "docstatus": 1},
+			pluck="name",
+		)
+		if kept:
+			frappe.msgprint(
+				f"Payment Entry {', '.join(kept)} left in place — it stays on the "
+				f"customer's account and can settle the amended invoice.",
+				alert=True,
+			)
 
 	# ── b. Stock Reservation Entries ──────────────────────────────────────────
 	_cancel_stock_reservations(so_name)
