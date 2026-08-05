@@ -175,6 +175,9 @@ doc_events = {
 		"on_submit": "fours_customizations.sales_invoice_handler.on_submit",
 		"before_submit": "fours_customizations.sales_invoice_handler.before_submit",
 		"before_save": "fours_customizations.sales_invoice_handler.before_save",
+		# Goods coming back is the store's event to record. Accounts may correct a
+		# price, but may not credit a customer for stock nobody checked back in.
+		"validate": "fours_customizations.sales_chain_integrity.validate_goods_return_comes_from_store",
 		# Failsafe: never let an invoice be cancelled while a submitted Delivery
 		# Note still holds its stock, nor once money has been received against
 		# it (which would strand the receipt as customer credit). doc_events

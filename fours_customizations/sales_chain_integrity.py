@@ -421,6 +421,60 @@ def validate_no_credit_note_on_return(doc, method=None):
 	)
 
 
+def validate_goods_return_comes_from_store(doc, method=None):
+	"""Sales Invoice ``validate`` — a credit note for returned goods may only be
+	raised by the store, never typed by accounts.
+
+	Goods coming back is a physical event. The person who receives them into the
+	store is the only one who knows it happened, so they post the Delivery Note
+	Return and the credit note follows automatically — priced at what the
+	customer was actually charged, corrections included. Letting accounts raise
+	the credit note directly would credit a customer for goods nobody ever
+	checked back in, and it is the one remaining way to hand out money without a
+	physical event behind it.
+
+	Deliberately *not* blocked:
+
+	  * the return the store's own Delivery Note Return raises
+	    (``flags.from_dn_return``);
+	  * a price correction, which moves no goods and is identified by
+	    ``custom_price_adjustment_for`` (see ``price_adjustment``);
+	  * an audited override, ``flags.allow_manual_goods_return``, for the rare
+	    case that has to be put right by hand.
+	"""
+	if not doc.get("is_return"):
+		return
+	if doc.flags.get("from_dn_return"):
+		return
+	if doc.get("custom_price_adjustment_for"):
+		return
+	if doc.flags.get("allow_manual_goods_return"):
+		return
+
+	frappe.throw(
+		_(
+			"""
+<div style="font-family:'Segoe UI',Arial,sans-serif;line-height:1.6;color:#222;">
+  <p style="font-size:14px;"><b>A credit note for returned goods cannot be raised here.</b></p>
+  <p>Goods coming back is something the <b>store</b> records. Accounts cannot
+     credit a customer for stock that nobody has checked back in.</p>
+  <p><b>What to do instead:</b></p>
+  <ol>
+    <li>The customer returns the goods to the store.</li>
+    <li>The store keeper opens the original <b>Delivery Note</b> and posts a
+        <b>Return</b> for the quantity actually received.</li>
+    <li>The credit note is then raised <b>automatically</b>, priced at what the
+        customer was really charged — including any price correction made since.</li>
+  </ol>
+  <p>If the price is wrong but no goods are coming back, use
+     <b>Corrections &gt; Adjust Price</b> on the invoice instead.</p>
+</div>
+"""
+		),
+		title=_("Returns are recorded by the store"),
+	)
+
+
 # ── repair ───────────────────────────────────────────────────────────────────
 
 @frappe.whitelist()
