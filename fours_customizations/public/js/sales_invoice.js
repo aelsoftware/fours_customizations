@@ -11,6 +11,13 @@ frappe.ui.form.on("Sales Invoice", {
 	async validate(frm) {
 		if (frm.doc.company !== "4S Industries Limited") return;
 
+		// A Link control updates the document only after its async validation has
+		// finished. If a user types an exact value and immediately clicks Save,
+		// Frappe can run the mandatory check while the value is still only visible
+		// in the input. Resolve those two required 4S links before that check.
+		await resolve_typed_link(frm, "customer");
+		await resolve_typed_link(frm, "custom_sales_person");
+
 		if (!frm.doc.custom_sales_person) {
 			const people = [
 				...new Set(
@@ -36,6 +43,28 @@ frappe.ui.form.on("Sales Invoice", {
 		}
 	},
 });
+
+async function resolve_typed_link(frm, fieldname) {
+	if (frm.doc[fieldname]) return;
+
+	const field = frm.fields_dict[fieldname];
+	const typed_value = field?.get_input_value?.()?.trim();
+	if (!typed_value || !field.validate_link_and_fetch) return;
+
+	const resolved_value = await field.validate_link_and_fetch(typed_value);
+	if (resolved_value) {
+		await frm.set_value(fieldname, resolved_value);
+		return;
+	}
+
+	const label = __(field.df.label || fieldname);
+	frappe.throw(
+		__(
+			"{0} <b>{1}</b> was typed but not selected. Choose an existing {0} from the dropdown, or create it first if it is new.",
+			[label, frappe.utils.escape_html(typed_value)],
+		),
+	);
+}
 
 // Adjust Price — correct a price after the Delivery Note has gone out.
 // Cancelling a delivered invoice is blocked (sales_chain_integrity), so this
