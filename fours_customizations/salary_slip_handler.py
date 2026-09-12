@@ -18,7 +18,11 @@ from __future__ import annotations
 from datetime import timedelta
 
 import frappe
-from frappe.utils import flt, getdate, rounded
+from frappe.utils import flt, getdate
+from hrms.utils.holiday_list import (
+	get_holiday_dates_between_range,
+	get_holiday_list_for_employee,
+)
 
 from fours_customizations.commission_handler import compute_employee_commission
 from fours_customizations.fours_customizations.doctype.four_s_industries_settings.four_s_industries_settings import (
@@ -52,6 +56,8 @@ def calculate_and_add_deductions(doc, method=None):
 		frappe.log_error(frappe.get_traceback(), "4S Salary Slip: employee load failed")
 		return
 
+	_validate_holiday_list_coverage(doc)
+
 	try:
 		_apply_employee_salary_deductions(doc)
 	except Exception:
@@ -66,14 +72,12 @@ def calculate_and_add_deductions(doc, method=None):
 			frappe.log_error(frappe.get_traceback(), "4S Salary Slip: designation load failed")
 
 	commission = _apply_commission(doc)
+	_cap_attendance_deductions(doc)
 
 	# Summary fields for print/reporting (custom fields on Salary Slip).
 	doc.custom_total_commission = flt(commission)
-	doc.custom_basic_pay = _get_employee_base(doc)
+	doc.custom_basic_pay = _get_component_amount(doc.earnings, "Basic Salary")
 
-	doc.gross_pay = sum([flt(e.amount) for e in doc.earnings])
-	doc.total_deduction = sum([flt(d.amount) for d in doc.deductions])
-	doc.net_pay = doc.gross_pay - doc.total_deduction
 	_sync_derived_totals(doc)
 
 
@@ -84,6 +88,15 @@ _ATTENDANCE_COMPONENTS = (
 	"Late Deduction",
 	"Early Exit Deduction",
 	"No Checkout Deduction",
+)
+
+# When attendance penalties exceed payable earnings, reduce absence first and
+# keep the more specific late / early-exit / no-checkout penalties intact.
+_ATTENDANCE_CAP_REDUCTION_ORDER = (
+	"Absent Deduction",
+	"No Checkout Deduction",
+	"Early Exit Deduction",
+	"Late Deduction",
 )
 
 
@@ -139,10 +152,47 @@ def _apply_attendance_deductions(doc, designation):
 			_remove_component_row(doc, "deductions", component)
 
 
+def _cap_attendance_deductions(doc):
+	"""Keep custom attendance penalties from making take-home pay negative.
+
+	Loans, taxes, and other deductions retain their full value. Only the excess
+	attendance penalty is reduced, giving payroll the zero floor required by
+	HRMS while leaving non-attendance obligations untouched for review.
+	"""
+	attendance_rows = [
+		row
+		for row in doc.deductions
+		if row.salary_component in _ATTENDANCE_COMPONENTS and not row.do_not_include_in_total
+	]
+	if not attendance_rows:
+		return
+
+	gross_pay = doc.get_component_totals("earnings")
+	other_deductions = sum(
+		flt(row.amount)
+		for row in doc.deductions
+		if row.salary_component not in _ATTENDANCE_COMPONENTS and not row.do_not_include_in_total
+	)
+	available = max(flt(gross_pay) - other_deductions - flt(doc.get("total_loan_repayment")), 0)
+	excess = sum(flt(row.amount) for row in attendance_rows) - available
+	if excess <= 0:
+		return
+
+	for component in _ATTENDANCE_CAP_REDUCTION_ORDER:
+		for row in attendance_rows:
+			if row.salary_component != component or excess <= 0:
+				continue
+			reduction = min(flt(row.amount), excess)
+			row.amount = flt(flt(row.amount) - reduction, row.precision("amount"))
+			excess -= reduction
+
+
 def _shift_assigned_dates(employee, start, end) -> set:
 	"""Set of dates in [start, end] on which the employee has a submitted Shift
 	Assignment. Handles both per-day rows and open-ended / ranged assignments
-	(a blank end_date is treated as ongoing)."""
+	(a blank end_date is treated as ongoing only while the assignment is Active).
+	Date-bounded rows remain historical evidence after HRMS auto-expires them.
+	"""
 	rows = frappe.get_all(
 		"Shift Assignment",
 		filters={
@@ -150,10 +200,12 @@ def _shift_assigned_dates(employee, start, end) -> set:
 			"docstatus": 1,
 			"start_date": ["<=", end],
 		},
-		fields=["start_date", "end_date"],
+		fields=["start_date", "end_date", "status"],
 	)
 	dates: set = set()
 	for row in rows:
+		if row.status == "Inactive" and not row.end_date:
+			continue
 		s = max(getdate(row.start_date), start)
 		e = min(getdate(row.end_date) if row.end_date else end, end)
 		day = s
@@ -164,19 +216,83 @@ def _shift_assigned_dates(employee, start, end) -> set:
 
 
 def _holiday_dates(employee, company, start, end) -> set:
-	"""Holiday dates in [start, end] from the employee's Holiday List, falling
-	back to the company default."""
-	holiday_list = frappe.db.get_value("Employee", employee, "holiday_list") or (
+	"""Holiday dates in [start, end] from effective HRMS assignments.
+
+	The list's configured weekly off remains authoritative even when its dated
+	rows have not yet been rolled into a new year. This is the same failsafe used
+	by the nightly attendance creator and prevents Sundays becoming deductions.
+	"""
+	start, end = getdate(start), getdate(end)
+	dates = {
+		getdate(day)
+		for day in get_holiday_dates_between_range(
+			employee,
+			start,
+			end,
+			raise_exception_for_holiday_list=False,
+		)
+	}
+
+	from_info = get_holiday_list_for_employee(
+		employee, raise_exception=False, as_on=start, as_dict=True
+	) or frappe._dict()
+	to_info = get_holiday_list_for_employee(
+		employee, raise_exception=False, as_on=end, as_dict=True
+	) or frappe._dict()
+	legacy_list = frappe.db.get_value("Employee", employee, "holiday_list") or (
 		frappe.db.get_value("Company", company, "default_holiday_list") if company else None
 	)
-	if not holiday_list:
-		return set()
-	rows = frappe.get_all(
-		"Holiday",
-		filters={"parent": holiday_list, "holiday_date": ["between", [start, end]]},
-		fields=["holiday_date"],
-	)
-	return {getdate(r.holiday_date) for r in rows}
+	from_list = from_info.get("holiday_list") or legacy_list
+	to_list = to_info.get("holiday_list") or from_list
+	periods = [(start, end, from_list)]
+	if from_list and to_list and from_list != to_list:
+		change_date = max(start, getdate(to_info.from_date))
+		periods = [(start, change_date - timedelta(days=1), from_list), (change_date, end, to_list)]
+
+	for period_start, period_end, holiday_list in periods:
+		if not holiday_list or period_start > period_end:
+			continue
+		dates.update(
+			getdate(row.holiday_date)
+			for row in frappe.get_all(
+				"Holiday",
+				filters={
+					"parent": holiday_list,
+					"holiday_date": ["between", [period_start, period_end]],
+				},
+				fields=["holiday_date"],
+			)
+		)
+		weekly_off = frappe.db.get_value("Holiday List", holiday_list, "weekly_off", cache=True)
+		day = period_start
+		while weekly_off and day <= period_end:
+			if day.strftime("%A") == weekly_off:
+				dates.add(day)
+			day += timedelta(days=1)
+	return dates
+
+
+def _validate_holiday_list_coverage(doc):
+	"""Stop payroll rather than silently treating an expired calendar as valid."""
+	for boundary in (getdate(doc.start_date), getdate(doc.end_date)):
+		holiday_list = get_holiday_list_for_employee(
+			doc.employee,
+			raise_exception=False,
+			as_on=boundary,
+		)
+		if not holiday_list:
+			frappe.throw(
+				f"No Holiday List is assigned to {doc.employee} for {boundary}. "
+				"Assign one before calculating payroll."
+			)
+		coverage = frappe.db.get_value(
+			"Holiday List", holiday_list, ["from_date", "to_date"], as_dict=True, cache=True
+		)
+		if not coverage or not (getdate(coverage.from_date) <= boundary <= getdate(coverage.to_date)):
+			frappe.throw(
+				f"Holiday List '{holiday_list}' does not cover {boundary}. "
+				"Extend the list before calculating payroll so weekly offs are not charged as absences."
+			)
 
 
 # ── employee salary deductions ──────────────────────────────────────────────
@@ -230,7 +346,11 @@ def _apply_employee_salary_deductions(doc):
 
 
 def _remove_component_row(doc, table, component_name):
-	rows = [r for r in doc.get(table) or [] if r.salary_component != component_name]
+	rows = [
+		r
+		for r in doc.get(table) or []
+		if r.salary_component != component_name or r.additional_salary
+	]
 	if len(rows) != len(doc.get(table) or []):
 		doc.set(table, rows)
 
@@ -238,15 +358,18 @@ def _remove_component_row(doc, table, component_name):
 # ── overtime ────────────────────────────────────────────────────────────────
 
 def _apply_overtime(doc, designation):
+	component = "Designation Overtime Pay"
 	if not designation.overtime_start_time:
+		_remove_component_row(doc, "earnings", component)
 		return
 	from fours_customizations.overtime_utils import calculate_designation_overtime
 
 	data = calculate_designation_overtime(doc.employee, doc.start_date, doc.end_date)
 	amount = flt(data.get("total_amount", 0))
 	if amount <= 0:
+		_remove_component_row(doc, "earnings", component)
 		return
-	_upsert(doc.earnings, "Designation Overtime Pay", amount, doc, "earnings")
+	_upsert(doc.earnings, component, amount, doc, "earnings")
 
 
 # ── commission ──────────────────────────────────────────────────────────────
@@ -260,6 +383,7 @@ def _apply_commission(doc):
 		return 0.0
 	amount = compute_employee_commission(doc.employee, doc.start_date, doc.end_date, doc.company)
 	if amount <= 0:
+		_remove_component_row(doc, "earnings", commission_component)
 		return 0.0
 	_upsert(doc.earnings, commission_component, amount, doc, "earnings")
 	return flt(amount)
@@ -267,41 +391,53 @@ def _apply_commission(doc):
 
 # ── helpers ─────────────────────────────────────────────────────────────────
 
-def _get_employee_base(doc):
-	"""Employee's `base` from the latest Salary Structure Assignment in effect."""
-	base = frappe.db.get_value(
-		"Salary Structure Assignment",
-		{"employee": doc.employee, "docstatus": 1, "from_date": ("<=", doc.end_date)},
-		"base",
-		order_by="from_date desc",
-	)
-	return flt(base)
+def _get_component_amount(rows, component_name):
+	"""Return the amount actually payable for a component on this slip."""
+	for row in rows or []:
+		if row.salary_component == component_name:
+			return flt(row.amount)
+	return 0.0
 
 
 def _sync_derived_totals(doc):
-	"""Keep company-currency / rounded / in-words fields consistent with the
-	totals we just recomputed — the standard calculation ran before our rows
-	were added, so these would otherwise stay at the pre-commission values."""
+	"""Re-run HRMS totals after adding custom earnings and deductions.
+
+	The standard calculation runs before this hook. Use its own helpers so loan
+	repayments and ``do_not_include_in_total`` remain correct, then refresh all
+	period totals that the standard validation calculated before our rows existed.
+	"""
 	exchange_rate = flt(doc.exchange_rate) or 1
+	doc.gross_pay = doc.get_component_totals("earnings")
 	doc.base_gross_pay = flt(flt(doc.gross_pay) * exchange_rate, doc.precision("base_gross_pay"))
-	doc.base_total_deduction = flt(
-		flt(doc.total_deduction) * exchange_rate, doc.precision("base_total_deduction")
-	)
-	doc.rounded_total = rounded(flt(doc.net_pay))
-	doc.base_net_pay = flt(flt(doc.net_pay) * exchange_rate, doc.precision("base_net_pay"))
-	doc.base_rounded_total = rounded(flt(doc.base_net_pay))
-	try:
-		doc.set_net_total_in_words()
-	except Exception:
-		frappe.log_error(frappe.get_traceback(), "4S Salary Slip: in-words update failed")
+	doc.set_net_pay()
+	doc.compute_year_to_date()
+	doc.compute_month_to_date()
+	doc.compute_component_wise_year_to_date()
 
 
 def _upsert(rows, component_name, amount, doc, table):
+	component = frappe.get_cached_doc("Salary Component", component_name)
+	values = {
+		"salary_component": component_name,
+		"abbr": component.salary_component_abbr,
+		"amount": amount,
+		"default_amount": 0,
+		"additional_amount": 0,
+		"depends_on_payment_days": component.depends_on_payment_days,
+		"do_not_include_in_total": component.do_not_include_in_total,
+		"do_not_include_in_accounts": component.do_not_include_in_accounts,
+		"accrual_component": component.accrual_component,
+		"is_tax_applicable": component.is_tax_applicable,
+		"is_flexible_benefit": component.is_flexible_benefit,
+		"variable_based_on_taxable_salary": component.variable_based_on_taxable_salary,
+		"exempted_from_income_tax": component.exempted_from_income_tax,
+		"deduct_full_tax_on_selected_payroll_date": component.deduct_full_tax_on_selected_payroll_date,
+	}
 	for row in rows:
-		if row.salary_component == component_name:
-			row.amount = amount
+		if row.salary_component == component_name and not row.additional_salary:
+			row.update(values)
 			return
-	doc.append(table, {"salary_component": component_name, "amount": amount})
+	doc.append(table, values)
 
 
 def get_attendance_summary(employee, start_date, end_date):

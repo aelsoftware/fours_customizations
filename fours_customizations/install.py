@@ -14,6 +14,9 @@ def after_install():
 	create_company_custom_fields()
 	create_salary_slip_custom_fields()
 	seed_settings_defaults()
+	from fours_customizations.vox_kit_pos import ensure_vox_kit_pos_configuration
+
+	ensure_vox_kit_pos_configuration()
 
 
 def create_designation_custom_fields():
@@ -175,8 +178,9 @@ def create_sales_invoice_custom_fields():
 				"fieldtype": "Link",
 				"options": "Sales Person",
 				"insert_after": "sales_partner",
-				"mandatory_depends_on": "eval:doc.company == '4S Industries Limited'",
-				"description": "When set, the Sales Team is automatically populated with this person at 100% allocation.",
+				"reqd": 0,
+				"mandatory_depends_on": None,
+				"description": "Required for 4S. It is synchronized with a single Sales Team person at 100% allocation.",
 			},
 			{
 				# Structural link back to the invoice a price correction belongs to.

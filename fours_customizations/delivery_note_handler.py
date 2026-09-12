@@ -42,7 +42,6 @@ on_trash
 import frappe
 from frappe.utils import flt
 
-
 # ── entry point ───────────────────────────────────────────────────────────────
 
 def before_submit(doc, method=None):
@@ -142,7 +141,10 @@ def _sync_sales_invoice_return(dn):
 			if orig:
 				si_name = si_name or orig.against_sales_invoice
 				si_detail = si_detail or orig.si_detail
-		if not si_name or not si_detail:
+		# Only the invoice is essential. A row may carry no si_detail at all —
+		# older notes often do not — and dropping it here is why a return could
+		# credit nothing: the item code is enough to find the row it reverses.
+		if not si_name:
 			continue
 		si_detail = _resolve_si_detail(si_name, si_detail, item.get("item_code"))
 		if not si_detail:
@@ -188,7 +190,9 @@ def _resolve_si_detail(si_name, si_detail, item_code):
 	return silently credits nothing at all. Falling back to the item code finds
 	the equivalent row on the invoice actually in force.
 	"""
-	if frappe.db.exists("Sales Invoice Item", {"name": si_detail, "parent": si_name}):
+	if si_detail and frappe.db.exists(
+		"Sales Invoice Item", {"name": si_detail, "parent": si_name}
+	):
 		return si_detail
 	if not item_code:
 		return None

@@ -140,7 +140,12 @@ def download_attendance_logs_pdf(payroll_entry: str):
 
 	frappe.local.response.filename = f"Attendance Logs {pe.start_date} to {pe.end_date}.pdf"
 	frappe.local.response.filecontent = get_pdf(
-		_build_attendance_pdf_html(pe, data), {"orientation": "Landscape"}
+		_build_attendance_pdf_html(pe, data),
+		{
+			"orientation": "Landscape",
+			"margin-top": "4mm",
+			"margin-bottom": "3mm",
+		},
 	)
 	frappe.local.response.type = "pdf"
 
@@ -476,7 +481,7 @@ def _build_pdf_html(pe, rows: list[dict], totals: dict) -> str:
 # ═════════════════════════════════════════════════════════════════════════════
 
 # Days per strip in the PDF grid — keeps a landscape A4 row readable by
-# splitting a ~30-day month into two half-month strips, as on the paper form.
+# splitting a month into two strips, as on the paper attendance form.
 _LOG_CHUNK = 16
 
 
@@ -492,26 +497,45 @@ def _hhmm(dt) -> str:
 
 
 def _attendance_log_data(pe) -> dict:
-	"""Grid data: the period's dates, the shift-assigned employees on this
-	entry, and a {(employee, iso-date): punch} map from submitted Attendance."""
-	start, end = getdate(pe.start_date), getdate(pe.end_date)
-	period_dates = []
-	day = start
-	while day <= end:
-		period_dates.append(day)
-		day += timedelta(days=1)
+	"""Grid data: the period's dates, active shift-assigned employees on this
+	entry, and a {(employee, iso-date): punch} map from submitted Attendance.
 
+	The grid contains working days only.  Sundays / weekly offs and public
+	holidays are resolved with the same effective Holiday Lists used by salary
+	slip calculations, so stale Attendance rows on a holiday can never leak into
+	the printable Payroll Entry report.
+	"""
+	start, end = getdate(pe.start_date), getdate(pe.end_date)
 	entry_employees = _entry_employees(pe.name)
 	if not entry_employees:
 		frappe.throw("No employees found for this Payroll Entry.")
 
 	shift_emps = _shift_assigned_employees(entry_employees, start, end)
+	if shift_emps:
+		shift_emps &= set(
+			frappe.get_all(
+				"Employee",
+				filters={"name": ["in", list(shift_emps)], "status": "Active"},
+				pluck="name",
+			)
+		)
 	if not shift_emps:
-		frappe.throw("No employees on this Payroll Entry have a shift assigned in this period.")
+		frappe.throw(
+			"No active employees on this Payroll Entry have a shift assigned in this period."
+		)
+
+	excluded_dates = _attendance_log_holidays(shift_emps, pe.company, start, end)
+	period_dates = []
+	day = start
+	while day <= end:
+		if day not in excluded_dates:
+			period_dates.append(day)
+		day += timedelta(days=1)
+	period_date_set = set(period_dates)
 
 	details = frappe.get_all(
 		"Employee",
-		filters={"name": ["in", list(shift_emps)]},
+		filters={"name": ["in", list(shift_emps)], "status": "Active"},
 		fields=["name", "employee_name", "designation", "department", "employee_number"],
 	)
 	employees = sorted(
@@ -542,8 +566,11 @@ def _attendance_log_data(pe) -> dict:
 	)
 	punches: dict = {}
 	for a in records:
+		attendance_date = getdate(a.attendance_date)
+		if attendance_date not in period_date_set:
+			continue
 		# Last write wins if a day somehow has duplicates; Attendance is 1/day.
-		punches[(a.employee, str(getdate(a.attendance_date)))] = {
+		punches[(a.employee, str(attendance_date))] = {
 			"in": _hhmm(a.in_time),
 			"out": _hhmm(a.out_time),
 			"status": a.status or "",
@@ -551,7 +578,27 @@ def _attendance_log_data(pe) -> dict:
 			"early": bool(a.early_exit),
 		}
 
-	return {"period_dates": period_dates, "employees": employees, "punches": punches}
+	return {
+		"period_dates": period_dates,
+		"excluded_dates": sorted(excluded_dates),
+		"employees": employees,
+		"punches": punches,
+	}
+
+
+def _attendance_log_holidays(employees, company, start, end) -> set:
+	"""All effective non-working dates for employees represented in the grid.
+
+	The attendance layout has one shared date header for every employee, so the
+	union is intentional: a date that is a holiday for anyone in this Payroll
+	Entry must not be printed as an attendance-required day.
+	"""
+	from fours_customizations.salary_slip_handler import _holiday_dates
+
+	excluded: set = set()
+	for employee in employees:
+		excluded.update(_holiday_dates(employee, company, start, end))
+	return excluded
 
 
 def _entry_employees(payroll_entry: str) -> list[str]:
@@ -566,11 +613,20 @@ def _entry_employees(payroll_entry: str) -> list[str]:
 
 
 def _shift_assigned_employees(employees: list[str], start, end) -> set:
-	"""Subset of *employees* with a submitted Shift Assignment overlapping the
-	period. A blank end_date is treated as ongoing."""
+	"""Employees with an active, submitted Shift Assignment in the period.
+
+	The attendance log is an operational shift report, so expired, inactive or
+	cancelled assignments must never cause an employee row to appear.  Historical
+	assignment handling used by payroll deductions is deliberately separate.
+	"""
 	rows = frappe.get_all(
 		"Shift Assignment",
-		filters={"employee": ["in", employees], "docstatus": 1, "start_date": ["<=", end]},
+		filters={
+			"employee": ["in", employees],
+			"docstatus": 1,
+			"status": "Active",
+			"start_date": ["<=", end],
+		},
 		fields=["employee", "end_date"],
 	)
 	result: set = set()
@@ -593,7 +649,7 @@ def _punch_cell(punch) -> str:
 		return '<td class="empty"></td>'
 	if punch["status"] == "Absent":
 		return '<td class="absent">A</td>'
-	in_txt = punch["in"] or "&middot;"
+	in_txt = punch["in"] or "·"
 	out_txt = punch["out"] or "&mdash;"
 	in_cls = " late" if punch["late"] else ""
 	out_cls = " early" if punch["early"] else ""
@@ -626,7 +682,7 @@ def _build_attendance_pdf_html(pe, data: dict) -> str:
 				f'<tr class="prow"><td class="rl">IN<br>OUT</td>{punch_cells}</tr>'
 				"</table>"
 			)
-		sub = " &middot; ".join(x for x in (emp["designation"], emp["department"]) if x)
+		sub = " · ".join(x for x in (emp["designation"], emp["department"]) if x)
 		blocks.append(
 			'<div class="emp">'
 			f'<div class="emp-head"><span class="eid">{_esc(emp["code"])}</span> '
@@ -634,9 +690,64 @@ def _build_attendance_pdf_html(pe, data: dict) -> str:
 			f'{"".join(strips)}</div>'
 		)
 
+	header_html = f"""
+<div class="band">
+	<table>
+		<tr>
+			<td style="width:60px;">{logo_html}</td>
+			<td>
+				<div class="company">{_esc(pe.company)}</div>
+				<div class="meta">{_esc(pe.name)}</div>
+			</td>
+			<td>
+				<div class="title">Attendance Logs</div>
+				<div class="period">{pe.start_date} to {pe.end_date}</div>
+			</td>
+		</tr>
+	</table>
+</div>
+"""
+	legend_html = """
+<div class="legend">
+	Each day shows <b>IN</b> (top) over <b>OUT</b> (bottom). &nbsp;
+	<span class="sw" style="background:#EDEDED;color:#000;font-weight:bold;">A</span> = absent &nbsp;
+	<b><u>underlined</u></b> = flagged (late IN / early exit OUT) &nbsp;
+	<b>&mdash;</b> = no checkout
+</div>
+"""
+
+	# Deterministic pagination: the branded first page holds four employees;
+	# every subsequent page holds six, except for a final remainder. For the
+	# current 22 employees this is exactly 4 / 6 / 6 / 6.
+	page_groups = [blocks[:4]]
+	page_groups.extend(blocks[i:i + 6] for i in range(4, len(blocks), 6))
+
+	pages = []
+	for index, group in enumerate(page_groups):
+		classes = ["attendance-page"]
+		if index == 0:
+			classes.append("first-page")
+		elif index == len(page_groups) - 1:
+			classes.extend(("last-page", f"count-{len(group)}"))
+		else:
+			classes.append("middle-page")
+		if index == len(page_groups) - 1 and "last-page" not in classes:
+			classes.append("last-page")
+
+		pages.append(
+			f'<div class="{" ".join(classes)}">'
+			f'{header_html if index == 0 else ""}'
+			f'{"".join(group)}'
+			f'{legend_html if index == len(page_groups) - 1 else ""}'
+			"</div>"
+		)
+
 	return f"""
 <style>
 	* {{ -webkit-print-color-adjust: exact; print-color-adjust: exact; }}
+	/* Frappe otherwise replaces custom wkhtmltopdf margins with 15 mm.  This
+	   exact selector is also read as the PDF page-margin configuration. */
+	.print-format {{ margin-top: 4mm; margin-bottom: 3mm; }}
 	body {{ font-family: "Helvetica Neue", Helvetica, Arial, sans-serif; color: #{BRAND_BLACK}; margin: 0; }}
 	.band {{ border-bottom: 4px solid #{BRAND_GREEN}; padding: 6px 0 10px 0; }}
 	.band table {{ width: 100%; border: none; }}
@@ -647,6 +758,13 @@ def _build_attendance_pdf_html(pe, data: dict) -> str:
 		text-transform: uppercase; letter-spacing: 2px; }}
 	.period {{ font-size: 10px; text-align: right; }}
 	.emp {{ page-break-inside: avoid; margin-top: 12px; }}
+	.attendance-page {{ page-break-after: always; }}
+	.attendance-page.last-page {{ page-break-after: auto; }}
+	.attendance-page.first-page .emp {{ margin-top: 43px; }}
+	.attendance-page.middle-page .emp {{ margin-top: 17px; }}
+	.attendance-page.last-page.count-6 .emp {{ margin-top: 10px; }}
+	.attendance-page.last-page.count-5 .emp {{ margin-top: 43px; }}
+	.attendance-page.last-page.count-4 .emp {{ margin-top: 66px; }}
 	.emp-head {{ background: #{BRAND_BLACK}; color: #FFFFFF; font-size: 10px; font-weight: bold;
 		padding: 4px 8px; }}
 	.emp-head .eid {{ background: #{BRAND_GREEN}; color: #{BRAND_BLACK}; padding: 1px 6px;
@@ -674,28 +792,7 @@ def _build_attendance_pdf_html(pe, data: dict) -> str:
 	.legend b {{ color: #{BRAND_BLACK}; }}
 	.legend .sw {{ display: inline-block; padding: 0 5px; margin: 0 3px; border-radius: 2px; }}
 </style>
-<div class="band">
-	<table>
-		<tr>
-			<td style="width:60px;">{logo_html}</td>
-			<td>
-				<div class="company">{_esc(pe.company)}</div>
-				<div class="meta">{_esc(pe.name)}</div>
-			</td>
-			<td>
-				<div class="title">Attendance Logs</div>
-				<div class="period">{pe.start_date} to {pe.end_date}</div>
-			</td>
-		</tr>
-	</table>
-</div>
-{"".join(blocks)}
-<div class="legend">
-	Each day shows <b>IN</b> (top) over <b>OUT</b> (bottom). &nbsp;
-	<span class="sw" style="background:#EDEDED;color:#000;font-weight:bold;">A</span> = absent &nbsp;
-	<b><u>underlined</u></b> = flagged (late IN / early exit OUT) &nbsp;
-	<b>&mdash;</b> = no checkout
-</div>
+{"".join(pages)}
 """
 
 
@@ -749,7 +846,6 @@ def _build_attendance_excel(pe, data: dict) -> bytes:
 		row += 1
 
 		# Day-number header
-		day_row = row
 		lc = ws.cell(row=row, column=1, value="Date")
 		lc.font = Font(bold=True, color=BRAND_BLACK)
 		lc.fill = green

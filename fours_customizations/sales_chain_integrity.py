@@ -38,7 +38,11 @@ from __future__ import annotations
 
 import frappe
 from frappe import _
-from frappe.utils import flt
+from frappe.utils import cint, flt
+
+VOX_NANSANA_COMPANY = "Vox Lounge Nansana"
+VOX_NANSANA_PAID_CANCEL_FLAG = "allow_vox_nansana_embedded_payment_cancel"
+NATIVE_PAYMENT_CANCELLATION_SETTING = "allow_invoice_payment_unlink_on_cancel"
 
 
 def submitted_delivery_notes_for_invoice(invoice_name: str) -> list[str]:
@@ -155,11 +159,10 @@ def payments_against_invoice(invoice_name: str) -> list[dict]:
 	"""Live money allocated to *invoice_name* — Payment Entries and Journal
 	Entries that point at it, plus any POS payment taken on the invoice itself.
 
-	Cancelling an invoice does not undo the money. The receipt stays, loses the
-	bill it was paying, and turns into an unapplied advance sitting on the
-	customer's account — which is exactly the balance a later sale can be
-	quietly settled against. So the money has to be unwound first, deliberately
-	and on its own audit trail, before the invoice can go.
+	Separate receipts survive invoice cancellation as unapplied customer
+	credit when ERPNext unlinks them. Embedded POS payments belong to the
+	invoice voucher and are reversed with its ledger entries. The site's
+	cancellation policy decides which of these allocations block cancellation.
 	"""
 	if not invoice_name:
 		return []
@@ -204,22 +207,133 @@ def payments_against_invoice(invoice_name: str) -> list[dict]:
 	return allocated
 
 
-def validate_no_payment_allocated(doc, method=None):
-	"""Sales Invoice ``before_cancel`` — refuse to cancel once money has been
-	taken against the invoice.
+def has_only_embedded_invoice_payment(doc) -> bool:
+	"""True when the only live money on ``doc`` belongs to the POS invoice itself.
 
-	Without this, cancelling a paid invoice reverses the sale but leaves the
-	receipt behind as an advance on the customer's account. That is the route
-	by which a cancellation quietly manufactures customer credit, so it is shut
-	off here rather than policed after the fact.
+	A POS payment row is part of the Sales Invoice voucher: cancelling the
+	invoice reverses both the sale and its cash/bank leg. Payment Entries and
+	Journal Entries are separate vouchers, so this deliberately rejects even a
+	zeroed live reference to either one.
+	"""
+	paid_amount = flt(doc.get("paid_amount"))
+	if paid_amount <= 0:
+		return False
+
+	embedded_total = sum(
+		flt(row.get("amount")) for row in (doc.get("payments") or []) if flt(row.get("amount")) > 0
+	)
+	if embedded_total <= 0 or abs(embedded_total - paid_amount) > 0.01:
+		return False
+
+	if frappe.get_all(
+		"Payment Entry Reference",
+		filters={
+			"reference_doctype": "Sales Invoice",
+			"reference_name": doc.name,
+			"docstatus": 1,
+		},
+		pluck="name",
+		limit=1,
+	):
+		return False
+
+	if frappe.get_all(
+		"Journal Entry Account",
+		filters={
+			"reference_type": "Sales Invoice",
+			"reference_name": doc.name,
+			"docstatus": 1,
+		},
+		pluck="name",
+		limit=1,
+	):
+		return False
+
+	allocated = payments_against_invoice(doc.name)
+	return bool(allocated) and all(
+		row["voucher_type"] == "Sales Invoice" and row["voucher"] == doc.name
+		for row in allocated
+	)
+
+
+def can_auto_cancel_nansana_embedded_payment(
+	doc, user=None, *, during_cancel=False
+) -> bool:
+	"""Whether this request may bypass the global paid-invoice cancellation guard.
+
+	The exception is intentionally narrower than ordinary ERPNext cancellation:
+	it applies only to a Vox Lounge Nansana POS invoice, only through a user in a
+	configured Cancellation Request Settings auto-cancel role, and only when no
+	Delivery Note or separate payment voucher exists.
+	"""
+	allowed_statuses = (1, 2) if during_cancel else (1,)
+	if (
+		doc.get("docstatus") not in allowed_statuses
+		or doc.get("company") != VOX_NANSANA_COMPANY
+		or not doc.get("is_pos")
+		or doc.get("is_return")
+	):
+		return False
+
+	from cancellation_requests.utils import can_user_auto_cancel, can_user_cancel_doctype
+
+	user = user or frappe.session.user
+	if not can_user_auto_cancel(user) or can_user_cancel_doctype(user, "Sales Invoice"):
+		return False
+	if not frappe.has_permission("Sales Invoice", ptype="read", doc=doc, user=user):
+		return False
+
+	if frappe.get_all(
+		"Delivery Note Item",
+		filters={"against_sales_invoice": doc.name},
+		pluck="name",
+		limit=1,
+	):
+		return False
+
+	return has_only_embedded_invoice_payment(doc)
+
+
+def validate_no_payment_allocated(doc, method=None):
+	"""Sales Invoice ``before_cancel`` — apply the site's paid-invoice policy.
+
+	Opted-in sites let ERPNext reverse embedded invoice payments and unlink
+	Payment Entry allocations. The payment voucher and any allocations to
+	other invoices remain intact; the released amount becomes customer credit.
+	Journal Entries continue to require explicit resolution before cancelling.
 	"""
 	if doc.get("is_return"):
 		return
 	if doc.flags.get("allow_cancel_with_payment"):
 		# Deliberate, audited override — the money has already been unwound.
 		return
+	if (
+		frappe.flags.get(VOX_NANSANA_PAID_CANCEL_FLAG) == doc.name
+		and can_auto_cancel_nansana_embedded_payment(doc, during_cancel=True)
+	):
+		# The request-scoped marker is set only by the cancellation-request
+		# override. Rechecking company, role and payment ownership here prevents a
+		# caller from using the marker to widen the exception. Keep the established
+		# document flag too so the reason for the bypass remains explicit to later
+		# hooks in this cancellation.
+		doc.flags.allow_cancel_with_payment = True
+		return
 
 	allocated = payments_against_invoice(doc.name)
+	if cint(frappe.conf.get(NATIVE_PAYMENT_CANCELLATION_SETTING)):
+		# No company or role exception: authorization belongs to the calling
+		# cancellation workflow. This hook runs with docstatus=2, before native
+		# on_cancel reverses GL and unlinks receipts in the same transaction.
+		unlink_payment_entries = frappe.get_single_value(
+			"Accounts Settings", "unlink_payment_on_cancellation_of_invoice"
+		)
+		allocated = [
+			row for row in allocated
+			if not (
+				(row["voucher_type"] == "Sales Invoice" and row["voucher"] == doc.name)
+				or (row["voucher_type"] == "Payment Entry" and unlink_payment_entries)
+			)
+		]
 	if not allocated:
 		return
 
@@ -330,7 +444,7 @@ def submitted_delivery_returns_for_credit_note(invoice_name: str) -> list[str]:
 		"Sales Invoice", invoice_name, "custom_credits_delivery_return"
 	)
 	if credits_return:
-		names = list(names or []) + [credits_return]
+		names = [*list(names or []), credits_return]
 	if not names:
 		return []
 	return frappe.get_all(

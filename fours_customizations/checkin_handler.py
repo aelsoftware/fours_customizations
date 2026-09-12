@@ -29,7 +29,8 @@ hrms…employee_checkin.add_log_based_on_employee_field):
 
 from __future__ import annotations
 
-from datetime import datetime, time as dt_time, timedelta
+from datetime import datetime, timedelta
+from datetime import time as dt_time
 
 import frappe
 from frappe import _
@@ -40,7 +41,7 @@ from fours_customizations.fours_customizations.doctype.four_s_industries_setting
 )
 
 EARLY_ENTRY_WINDOW_MINUTES = 50  # window before shift start that counts as "early entry"
-LATE_GRACE_MINUTES = 10  # grace after shift start before an IN counts as late
+DEFAULT_LATE_GRACE_MINUTES = 15
 
 # A punch (even one the device labelled OUT) before this time is treated as an
 # arrival, not a departure — nobody leaves for the day this early.
@@ -91,10 +92,15 @@ def add_checkin(
 		as_dict=True,
 	)
 	if existing:
+		# A previous after_insert attempt may have stored the device punch but
+		# failed to update Attendance.  Device retries are therefore also our
+		# self-healing path: re-run the idempotent attendance projection before
+		# acknowledging the duplicate.
+		update_attendance_from_checkin(frappe.get_doc("Employee Checkin", existing.name))
 		return {
 			"status": "duplicate",
 			"checkin": existing.name,
-			"attendance": existing.attendance,
+			"attendance": frappe.db.get_value("Employee Checkin", existing.name, "attendance"),
 			"employee": employee,
 		}
 
@@ -208,7 +214,7 @@ def _apply_in(attendance, checkin_time, day, shift):
 		updates["status"] = "Present"
 
 	current_in = get_datetime(attendance.in_time) if attendance.in_time else None
-	if current_in is None or checkin_time < current_in:
+	if current_in is None or checkin_time <= current_in:
 		# earliest checkin of the day wins — recompute the entry flags off it
 		updates["in_time"] = checkin_time
 		_set_entry_flags(updates, checkin_time, day, shift)
@@ -218,10 +224,12 @@ def _apply_in(attendance, checkin_time, day, shift):
 
 def _apply_out(attendance, checkin_time, day, shift):
 	current_out = get_datetime(attendance.out_time) if attendance.out_time else None
-	if current_out and checkin_time <= current_out:
+	if current_out and checkin_time < current_out:
 		return  # an earlier OUT — the latest checkout stays final
 
 	updates = {"out_time": checkin_time}
+	if attendance.meta.has_field("custom_no_checkout"):
+		updates["custom_no_checkout"] = 0
 	if attendance.status == "Absent":
 		updates["status"] = "Present"
 
@@ -246,7 +254,19 @@ def _set_entry_flags(updates, in_dt, day, shift):
 	shift_start, _end = _shift_window(day, shift)
 	if not shift_start:
 		return
-	late_cutoff = shift_start + timedelta(minutes=LATE_GRACE_MINUTES)
+	try:
+		configured_grace = get_settings().late_threshold_minutes
+		late_grace = max(
+			0,
+			int(
+				DEFAULT_LATE_GRACE_MINUTES
+				if configured_grace in (None, "")
+				else configured_grace
+			),
+		)
+	except Exception:
+		late_grace = DEFAULT_LATE_GRACE_MINUTES
+	late_cutoff = shift_start + timedelta(minutes=late_grace)
 	updates["late_entry"] = 1 if in_dt > late_cutoff else 0
 	early_window = shift_start - timedelta(minutes=EARLY_ENTRY_WINDOW_MINUTES)
 	updates["custom_early_entry"] = 1 if early_window <= in_dt < shift_start else 0
@@ -266,10 +286,14 @@ def _create_auto_checkin(employee, time, shift, attendance_name):
 	checkin.log_type = "IN"
 	checkin.shift = shift
 	checkin.device_id = "SYSTEM-AUTO"
-	checkin.attendance = attendance_name
 	checkin.flags.from_auto_checkin = True
 	checkin.flags.ignore_permissions = True
 	checkin.insert()
+	# HRMS rejects a new Employee Checkin that already carries an Attendance
+	# link because it interprets the initial time value as a forbidden edit.
+	# Link it immediately after insertion instead; the synthetic punch and its
+	# Attendance still commit in the same transaction.
+	checkin.db_set("attendance", attendance_name, update_modified=False)
 
 
 def _overtime_updates(attendance, checkin_time, day):

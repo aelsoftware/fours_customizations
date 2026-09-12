@@ -5,6 +5,8 @@ app_description = "Custom app for attendance deduction management"
 app_email = "elvisndegwa90@gmail.com"
 app_license = "mit"
 
+required_apps = ["kit_pos"]
+
 # Apps
 # ------------------
 
@@ -173,6 +175,7 @@ doc_events = {
 	},
 	"Sales Invoice": {
 		"on_submit": "fours_customizations.sales_invoice_handler.on_submit",
+		"before_validate": "fours_customizations.sales_invoice_handler.before_validate",
 		"before_submit": "fours_customizations.sales_invoice_handler.before_submit",
 		"before_save": "fours_customizations.sales_invoice_handler.before_save",
 		# Goods coming back is the store's event to record. Accounts may correct a

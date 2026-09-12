@@ -18,12 +18,14 @@ and added straight to the Salary Slip.
 """
 
 import frappe
-from frappe.utils import flt, fmt_money
 from frappe.model.mapper import get_mapped_doc
+from frappe.utils import flt, fmt_money
 
 from fours_customizations.fours_customizations.doctype.four_s_industries_settings.four_s_industries_settings import (
         get_setting,
 )
+
+FOUR_S_COMPANY = "4S Industries Limited"
 
 
 def _is_automation_enabled(company):
@@ -37,14 +39,28 @@ def _default_pos_warehouse():
 
 
 def _sync_custom_sales_person_to_team(doc):
-        """When `custom_sales_person` is set, ensure the SI's `sales_team` table
-        carries that person at 100% allocation.
+        """Keep the 4S primary Sales Person and the Sales Team row in sync.
 
-        Idempotent: if the table already contains the same person at 100%, this is
-        a no-op.  If a different person is in there, the table is replaced so the
-        custom_sales_person is the single owner of this invoice.
+        The form exposes both ``custom_sales_person`` and ERPNext's standard
+        ``sales_team`` table.  Historically this only copied the custom field to
+        the table.  That made an invoice fail the custom field's mandatory check
+        when a user correctly filled the standard Sales Team row instead.
+
+        For 4S, a single populated Sales Team person is now accepted as the
+        primary person.  Once a primary person is known, the table is normalized
+        to the existing one-person, 100% allocation model.
         """
         partner = getattr(doc, "custom_sales_person", None)
+        if not partner and doc.company == FOUR_S_COMPANY:
+                team_people = list(dict.fromkeys(
+                        row.sales_person
+                        for row in (doc.get("sales_team") or [])
+                        if getattr(row, "sales_person", None)
+                ))
+                if len(team_people) == 1:
+                        partner = team_people[0]
+                        doc.custom_sales_person = partner
+
         if not partner:
                 return
 
@@ -69,6 +85,30 @@ def _sync_custom_sales_person_to_team(doc):
                 "commission_rate": rate,
                 "incentives": 0,
         })
+
+
+def before_validate(doc, method=None):
+        """Resolve either Sales Person input before Frappe checks mandatory data."""
+        _sync_custom_sales_person_to_team(doc)
+
+        if doc.company != FOUR_S_COMPANY or getattr(doc, "custom_sales_person", None):
+                return
+
+        team_people = {
+                row.sales_person
+                for row in (doc.get("sales_team") or [])
+                if getattr(row, "sales_person", None)
+        }
+        if len(team_people) > 1:
+                frappe.throw(
+                        "Select one primary Sales Person for 4S Industries Limited. "
+                        "The Sales Team currently contains more than one person."
+                )
+
+        frappe.throw(
+                "Sales Person is required for 4S Industries Limited. "
+                "Select it in the Sales Person field or add it to Sales Team."
+        )
 
 
 def _customer_available_credit(customer, company):
@@ -159,12 +199,16 @@ def _validate_payment_or_credit(doc):
 
 def before_submit(doc, method=None):
         doc.update_outstanding_for_self = 0
-        # Silently enable negative stock on items that would otherwise block.
+        # Credit control belongs to the opt-in selling workflow.
         if _is_automation_enabled(doc.company) and not doc.is_return:
-                # Credit gate: block submission unless the invoice is paid, the
-                # customer has enough advance/credit, or is whitelisted.
                 _validate_payment_or_credit(doc)
 
+        # Negative-stock handling is controlled independently by the global
+        # `enable_negative_stock_automation` setting inside this helper.  Do not
+        # couple it to a company's broader selling automations: external POS
+        # invoices (including Kit) update stock directly while deliberately not
+        # using the Sales Order / Delivery Note workflow.
+        if not doc.is_return:
                 try:
                         from fours_customizations.negative_stock_handler import ensure_negative_stock_for_doc
 
@@ -185,9 +229,6 @@ def before_save(doc, method=None):
                                 doc.set_warehouse = pos_warehouse
                                 for item in doc.items:
                                         item.warehouse = pos_warehouse
-
-        # Sync custom_sales_person → sales_team child table at 100% allocation.
-        _sync_custom_sales_person_to_team(doc)
 
         doc.update_outstanding_for_self = 0
 

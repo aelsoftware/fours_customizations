@@ -496,6 +496,20 @@ def create_price_adjustment(sales_invoice: str, rows, reason: str) -> dict:
 def _apply_common(target, si, reason):
 	target.company = si.company
 	target.customer = si.customer
+	# Price adjustments are system-created Sales Invoices.  Carry the original
+	# invoice's salesperson into the new document so the 4S mandatory-salesperson
+	# guard can validate it just like an invoice created from the desk.  Older
+	# invoices may only have the standard Sales Team row populated, hence the
+	# fallback.
+	primary_sales_person = si.get("custom_sales_person")
+	if not primary_sales_person:
+		team_people = list(dict.fromkeys(
+			row.sales_person for row in (si.get("sales_team") or []) if row.sales_person
+		))
+		if len(team_people) == 1:
+			primary_sales_person = team_people[0]
+	if primary_sales_person:
+		target.custom_sales_person = primary_sales_person
 	target.currency = si.currency
 	target.conversion_rate = flt(si.conversion_rate) or 1.0
 	target.selling_price_list = si.selling_price_list
@@ -605,7 +619,7 @@ def _notify(si, doc, changes, total_delta, reason, breaches):
 		kind = "Credit Note" if doc.is_return else "Supplementary Invoice"
 		lines = "\n".join(
 			f'  • {c["item_code"]}: {fmt_money(c["old_rate"], currency=si.currency)} → '
-			f'{fmt_money(c["new_rate"], currency=si.currency)} × {c["qty"]:g}'
+            f'{fmt_money(c["new_rate"], currency=si.currency)} x {c["qty"]:g}'
 			for c in changes
 		)
 		override = (

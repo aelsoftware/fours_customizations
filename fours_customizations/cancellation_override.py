@@ -2,9 +2,14 @@
 Cancellation Override — Fours Customizations
 ============================================
 
-Overrides ``cancellation_requests.api.request_cancellation`` so that a
-cancellation request raised on a **Sales Invoice whose Delivery Note is still
-in draft** is fast-tracked instead of waiting for a manual approver:
+Overrides ``cancellation_requests.api.request_cancellation`` for two narrow
+Sales Invoice auto-cancellation paths:
+
+* an invoice whose Delivery Note is still in draft; and
+* a Vox Lounge Nansana POS invoice paid only through its own embedded payment,
+  when the requester has a role configured under Auto Cancel Roles.
+
+The draft-Delivery-Note path is fast-tracked as follows:
 
   1. The draft Delivery Note(s) auto-created from the invoice are deleted.
   2. The Sales Invoice is cancelled automatically.
@@ -14,10 +19,9 @@ in draft** is fast-tracked instead of waiting for a manual approver:
      Invoice ("it has been cancelled and the reason was …") and to the
      requester ("your invoice has been auto-cancelled").
 
-Anything else — a different doctype, a return invoice, or a Sales Invoice whose
-Delivery Note has already been **submitted** (goods are out the door) — falls
-through unchanged to the original ``cancellation_requests`` manual-approval
-workflow.
+Anything else falls through unchanged to the original
+``cancellation_requests`` workflow. Separate Payment Entries and Journal
+Entries never receive the embedded-payment exception.
 
 The override is wired up through ``override_whitelisted_methods`` in
 ``hooks.py``; the client (cancellation_button.js) keeps calling the original
@@ -25,9 +29,6 @@ method path, so no front-end change is required.
 """
 
 import frappe
-from frappe import _
-from frappe.utils import escape_html, get_fullname
-
 from cancellation_requests.utils import (
     build_document_link,
     create_notification_log,
@@ -36,6 +37,13 @@ from cancellation_requests.utils import (
     post_to_slack_webhook,
     resolve_cancellation_recipients,
     send_slack_dm,
+)
+from frappe import _
+from frappe.utils import escape_html, get_fullname
+
+from fours_customizations.sales_chain_integrity import (
+    VOX_NANSANA_PAID_CANCEL_FLAG,
+    can_auto_cancel_nansana_embedded_payment,
 )
 
 INVOICE_DOCTYPE = "Sales Invoice"
@@ -54,9 +62,45 @@ def request_cancellation(doctype, name, reason):
         if result is not None:
             return result
 
+        result = _try_auto_cancel_nansana_paid_invoice(name, reason)
+        if result is not None:
+            return result
+
     from cancellation_requests.api import request_cancellation as _original
 
     return _original(doctype, name, reason)
+
+
+def _try_auto_cancel_nansana_paid_invoice(name, reason):
+    """Run the standard auto-cancel flow for a safe Nansana inline POS payment.
+
+    The original cancellation-requests endpoint remains the authority for the
+    configured role, direct-cancel exclusion, reason length, DocType config and
+    document status. The request marker only lets the global 4S payment guard
+    distinguish this tightly-scoped route after ``set_cancellation_reason``
+    reloads the invoice.
+    """
+    if not name:
+        return None
+
+    si = frappe.get_doc(INVOICE_DOCTYPE, name)
+    if si.docstatus != 1 or not can_auto_cancel_nansana_embedded_payment(si):
+        return None
+
+    from cancellation_requests.api import request_cancellation as _original
+
+    had_marker = VOX_NANSANA_PAID_CANCEL_FLAG in frappe.flags
+    previous_marker = frappe.flags.get(VOX_NANSANA_PAID_CANCEL_FLAG)
+    # Bind the exception to this exact invoice. Any nested cancellation that
+    # runs in the same request must still pass the ordinary payment guard.
+    frappe.flags[VOX_NANSANA_PAID_CANCEL_FLAG] = si.name
+    try:
+        return _original(INVOICE_DOCTYPE, name, reason)
+    finally:
+        if had_marker:
+            frappe.flags[VOX_NANSANA_PAID_CANCEL_FLAG] = previous_marker
+        else:
+            frappe.flags.pop(VOX_NANSANA_PAID_CANCEL_FLAG, None)
 
 
 # ── eligibility + orchestration ────────────────────────────────────────────────

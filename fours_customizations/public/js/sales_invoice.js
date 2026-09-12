@@ -8,6 +8,33 @@ frappe.ui.form.on("Sales Invoice", {
 				}
 			});
 	},
+	async validate(frm) {
+		if (frm.doc.company !== "4S Industries Limited") return;
+
+		if (!frm.doc.custom_sales_person) {
+			const people = [
+				...new Set(
+					(frm.doc.sales_team || [])
+						.map((row) => row.sales_person)
+						.filter(Boolean),
+				),
+			];
+
+			if (people.length === 1) {
+				await frm.set_value("custom_sales_person", people[0]);
+			} else if (people.length > 1) {
+				frappe.throw(
+					__("Select one primary Sales Person. The Sales Team contains more than one person."),
+				);
+			}
+		}
+
+		if (!frm.doc.custom_sales_person) {
+			frappe.throw(
+				__("Sales Person is required. Select it above or add one person to Sales Team."),
+			);
+		}
+	},
 });
 
 // Adjust Price — correct a price after the Delivery Note has gone out.

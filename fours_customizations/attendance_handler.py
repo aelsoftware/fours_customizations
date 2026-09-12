@@ -15,17 +15,17 @@ Already-existing attendance records are left alone so re-runs are safe.
 
 from __future__ import annotations
 
-from datetime import datetime, time as dt_time, timedelta
+from datetime import datetime, timedelta
 
 import frappe
 from frappe.utils import (
-	add_to_date,
 	get_datetime,
 	get_time,
 	getdate,
 	now_datetime,
 	time_diff_in_hours,
 )
+from hrms.utils.holiday_list import get_holiday_list_for_employee
 
 from fours_customizations.fours_customizations.doctype.four_s_industries_settings.four_s_industries_settings import (
 	get_settings,
@@ -54,6 +54,8 @@ def create_daily_attendance(target_date: str | None = None) -> dict:
 		filters={"status": "Active"},
 		fields=["name", "employee_name", "company", "default_shift", "holiday_list"],
 	)
+	for holiday_list in {_resolve_holiday_list(emp, day) for emp in employees} - {None}:
+		_ensure_holiday_list_coverage(holiday_list, day)
 
 	created, updated, skipped, absent_count = 0, 0, 0, 0
 
@@ -152,7 +154,7 @@ def _create_absent(emp, day) -> None:
 	lists are usually blank here)."""
 	if not _has_shift_assignment(emp.name, day):
 		return
-	if _is_holiday(_resolve_holiday_list(emp), day):
+	if _is_holiday(_resolve_holiday_list(emp, day), day):
 		return
 
 	attendance = frappe.new_doc("Attendance")
@@ -172,13 +174,47 @@ def _create_absent(emp, day) -> None:
 def _is_holiday(holiday_list: str | None, day) -> bool:
 	if not holiday_list:
 		return False
-	return bool(
-		frappe.db.exists("Holiday", {"parent": holiday_list, "holiday_date": day})
+	day = getdate(day)
+	if frappe.db.exists("Holiday", {"parent": holiday_list, "holiday_date": day}):
+		return True
+
+	# Weekly offs are a standing work-schedule rule, not a one-year exception.
+	# Keep honouring them if somebody forgets to roll the Holiday List's dated
+	# rows forward; otherwise the nightly job silently marks every Sunday absent.
+	weekly_off = frappe.db.get_value("Holiday List", holiday_list, "weekly_off", cache=True)
+	return bool(weekly_off and day.strftime("%A") == weekly_off)
+
+
+def _ensure_holiday_list_coverage(holiday_list: str, day) -> None:
+	"""Roll a country Holiday List through ``day`` when its range has expired.
+
+	This keeps both weekly offs and the selected country's public holidays
+	current without requiring a manual calendar rollover every January.
+	"""
+	day = getdate(day)
+	doc = frappe.get_doc("Holiday List", holiday_list)
+	if doc.to_date and day <= getdate(doc.to_date):
+		return
+
+	doc.to_date = day.replace(month=12, day=31)
+	if doc.weekly_off:
+		doc.get_weekly_off_dates()
+	if doc.country:
+		doc.get_local_holidays()
+	doc.flags.ignore_permissions = True
+	doc.save(ignore_permissions=True)
+	frappe.clear_cache(doctype="Holiday List")
+
+
+def _resolve_holiday_list(emp, day=None) -> str | None:
+	"""Resolve the effective HRMS Holiday List, with legacy-field fallback."""
+	holiday_list = get_holiday_list_for_employee(
+		emp.name,
+		raise_exception=False,
+		as_on=day,
 	)
-
-
-def _resolve_holiday_list(emp) -> str | None:
-	"""Holiday list for the employee, falling back to the company default."""
+	if holiday_list:
+		return holiday_list
 	return emp.get("holiday_list") or (
 		frappe.db.get_value("Company", emp.get("company"), "default_holiday_list")
 		if emp.get("company")
@@ -188,7 +224,13 @@ def _resolve_holiday_list(emp) -> str | None:
 
 def _has_shift_assignment(employee: str, day) -> bool:
 	"""True if the employee has a submitted Shift Assignment covering `day`
-	(a blank end_date is treated as ongoing)."""
+	(a blank end_date is treated as ongoing only while the assignment is Active).
+
+	HRMS automatically marks date-bounded assignments Inactive after they expire,
+	so those rows remain valid historical evidence.  An Inactive open-ended row,
+	on the other hand, has been explicitly switched off and must not keep creating
+	absences forever.
+	"""
 	return bool(
 		frappe.db.sql(
 			"""
@@ -196,6 +238,7 @@ def _has_shift_assignment(employee: str, day) -> bool:
 			WHERE employee = %(emp)s AND docstatus = 1
 			  AND start_date <= %(day)s
 			  AND (end_date IS NULL OR end_date >= %(day)s)
+			  AND (status = 'Active' OR end_date IS NOT NULL)
 			LIMIT 1
 			""",
 			{"emp": employee, "day": day},
