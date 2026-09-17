@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import copy
 import json
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 from types import SimpleNamespace
 from unittest import TestCase
@@ -215,6 +215,85 @@ def _ledger_snapshot(*, gl_entries=None, payment_entries=None, advance_entries=N
 		"advance_payment_ledger_entries": advance_entries or [],
 		"stock_ledger_entries": stock_entries or [],
 	}
+
+
+def _terminal_stock_date_plan():
+	before_sle = frappe._dict(
+		name="SLE-1",
+		docstatus=1,
+		posting_date=date(2026, 9, 16),
+		posting_time="12:34:56",
+		posting_datetime=datetime(2026, 9, 16, 12, 34, 56),
+		fiscal_year="2026",
+		item_code="BRAKE-PEDAL",
+		warehouse="Stores - 4S",
+		actual_qty=-10,
+		qty_after_transaction=90,
+		valuation_rate=2_000,
+		stock_value=180_000,
+		stock_value_difference=-20_000,
+		voucher_type="Sales Invoice",
+		voucher_no="TEST-STOCK-SI",
+		voucher_detail_no="SI-ITEM-1",
+		is_cancelled=0,
+	)
+	after_sle = frappe._dict(
+		{
+			**dict(before_sle),
+			"posting_date": date(2026, 9, 17),
+			"posting_datetime": datetime(2026, 9, 17, 12, 34, 56),
+			"fiscal_year": "2027",
+		}
+	)
+	bin_before = {
+		"name": "BIN-1",
+		"item_code": "BRAKE-PEDAL",
+		"warehouse": "Stores - 4S",
+		"actual_qty": 90,
+		"valuation_rate": 2_000,
+		"stock_value": 180_000,
+		"projected_qty": 90,
+	}
+	external_ledgers = {
+		"payment_ledger_entries": [{"name": "PLE-1", "amount": -20_000}],
+		"advance_payment_ledger_entries": [],
+	}
+	plan = {
+		"old_posting_date": "2026-09-16",
+		"new_posting_date": "2026-09-17",
+		"posting_time": "12:34:56",
+		"old_posting_datetime": "2026-09-16 12:34:56",
+		"new_posting_datetime": "2026-09-17 12:34:56",
+		"new_fiscal_year": "2027",
+		"company": correction.FOUR_S_COMPANY,
+		"cutoff": "2026-09-16 12:34:56",
+		"source_sles": [dict(before_sle)],
+		"source_sle_names": [before_sle.name],
+		"pairs": [{"item_code": before_sle.item_code, "warehouse": before_sle.warehouse}],
+		"bin_before": [bin_before],
+		"pair_evidence": [
+			{
+				"item_code": before_sle.item_code,
+				"warehouse": before_sle.warehouse,
+				"terminal_sle": before_sle.name,
+				"reserved_stock_at_target": 0,
+				"reservation_rows": [],
+				"bin": {
+					key: bin_before[key]
+					for key in (
+						"name",
+						"item_code",
+						"warehouse",
+						"actual_qty",
+						"valuation_rate",
+						"stock_value",
+					)
+				},
+			}
+		],
+		"external_payment_ledgers_before": external_ledgers,
+	}
+	return plan, after_sle, bin_before, external_ledgers
 
 
 class TestAccountingCorrection(TestCase):
@@ -577,6 +656,39 @@ class TestAccountingCorrection(TestCase):
 			correction._verify_invoice_payment_schedule_transition(
 				doc, correction.INCLUDE_PAYMENT, details
 			)
+
+	def test_include_payment_verification_requires_zero_change_amounts(self):
+		doc = _unpaid_invoice(outstanding_amount=250_000, conversion_rate=1.25)
+		with (
+			patch.object(correction, "_get_mode_of_payment", return_value=_mode("Cash Ugx")),
+			patch.object(correction, "_validate_invoice_payment_account_currency"),
+		):
+			details = correction._include_invoice_payment(doc, "Cash Ugx")
+
+		doc.docstatus = 1
+		doc.outstanding_amount = 0
+		before = _ledger_snapshot()
+		after = _ledger_snapshot()
+		with patch.object(correction, "_verify_active_gl_matches_document"):
+			correction._verify_result(
+				doc, correction.INCLUDE_PAYMENT, details, before, after
+			)
+
+		for fieldname in ("change_amount", "base_change_amount"):
+			with self.subTest(fieldname=fieldname):
+				corrupt = copy.deepcopy(doc)
+				setattr(corrupt, fieldname, 1)
+				with (
+					patch.object(correction, "_verify_active_gl_matches_document"),
+					self.assertRaises(frappe.ValidationError),
+				):
+					correction._verify_result(
+						corrupt,
+						correction.INCLUDE_PAYMENT,
+						details,
+						before,
+						after,
+					)
 
 	def test_payment_entry_mode_change_updates_the_correct_account_side_only(self):
 		for payment_type, changed_field, unchanged_field in (
@@ -1114,18 +1226,177 @@ class TestAccountingCorrection(TestCase):
 		)
 		self.assertIsNone(reference.reconcile_effect_on)
 
-	def test_stock_backed_invoice_date_change_is_rejected_before_period_checks(self):
+	def test_stock_backed_invoice_date_change_uses_normal_period_checks(self):
 		doc = _Invoice(
 			doctype="Sales Invoice",
 			update_stock=1,
 			posting_date=date(2026, 9, 16),
+			set_posting_time=0,
 		)
+		with patch.object(correction, "_validate_open_accounting_dates") as validate_dates:
+			details = correction._change_posting_date(doc, "2026-09-17")
+
+		self.assertEqual(doc.posting_date, date(2026, 9, 17))
+		self.assertEqual(doc.set_posting_time, 1)
+		self.assertEqual(
+			details,
+			{
+				"old_posting_date": date(2026, 9, 16),
+				"new_posting_date": date(2026, 9, 17),
+			},
+		)
+		validate_dates.assert_called_once_with(doc, date(2026, 9, 16), date(2026, 9, 17))
+
+	def test_terminal_stock_date_verification_accepts_only_date_metadata_changes(self):
+		plan, after_sle, bin_before, external_ledgers = _terminal_stock_date_plan()
+		doc = _Invoice(doctype="Sales Invoice", name="TEST-STOCK-SI")
 		with (
-			patch.object(correction, "_validate_open_accounting_dates") as validate_dates,
+			patch.object(correction, "_stock_snapshot_fields", return_value=tuple(after_sle)),
+			patch.object(correction, "_stock_source_snapshot", return_value=[after_sle]),
+			patch.object(correction, "_locked_bin_snapshot", return_value=bin_before),
+			patch.object(correction, "_stock_pair_range", return_value=[after_sle]),
+			patch.object(correction, "_locked_stock_reservations", return_value=[]),
+			patch.object(
+				correction,
+				"_external_invoice_ledger_snapshot",
+				return_value=external_ledgers,
+			),
+		):
+			correction._verify_terminal_stock_state(doc, plan)
+
+	def test_stock_date_result_requires_verified_retime_evidence(self):
+		plan, after_sle, _bin_before, _external_ledgers = _terminal_stock_date_plan()
+		plan["stock_correction_evidence"] = {
+			"version": correction.STOCK_EVIDENCE_VERSION,
+			"operation": correction.STOCK_OPERATION,
+			"verified": True,
+		}
+		doc = _Invoice(
+			doctype="Sales Invoice",
+			name="TEST-STOCK-SI",
+			company=correction.FOUR_S_COMPANY,
+			docstatus=1,
+			update_stock=1,
+			posting_date=date(2026, 9, 17),
+		)
+		details = {
+			"new_posting_date": date(2026, 9, 17),
+			"stock_repost_plan": plan,
+		}
+		before = _ledger_snapshot()
+		after = _ledger_snapshot(stock_entries=[after_sle])
+		with (
+			patch.object(correction, "_verify_active_gl_matches_document"),
+			patch.object(correction, "_verify_terminal_stock_state") as verify_stock,
+		):
+			correction._verify_result(
+				doc, correction.CHANGE_POSTING_DATE, details, before, after
+			)
+		verify_stock.assert_called_once_with(doc, plan)
+
+		with (
+			patch.object(correction, "_verify_active_gl_matches_document"),
 			self.assertRaises(frappe.ValidationError),
 		):
-			correction._change_posting_date(doc, "2026-09-17")
-		validate_dates.assert_not_called()
+			correction._verify_result(
+				doc,
+				correction.CHANGE_POSTING_DATE,
+				{"new_posting_date": date(2026, 9, 17)},
+				before,
+				after,
+			)
+
+		with (
+			patch.object(correction, "_verify_active_gl_matches_document"),
+			patch.object(correction, "_verify_terminal_stock_state"),
+			self.assertRaises(frappe.ValidationError),
+		):
+			plan["stock_correction_evidence"] = {
+				**plan["stock_correction_evidence"],
+				"verified": False,
+			}
+			correction._verify_result(
+				doc, correction.CHANGE_POSTING_DATE, details, before, after
+			)
+
+	def test_terminal_stock_date_verification_rejects_sle_identity_or_value_drift(self):
+		plan, after_sle, bin_before, external_ledgers = _terminal_stock_date_plan()
+		doc = _Invoice(doctype="Sales Invoice", name="TEST-STOCK-SI")
+		corruptions = {
+			"identity": [],
+			"posting_datetime": [
+				frappe._dict(
+					{
+						**dict(after_sle),
+						"posting_datetime": datetime(2026, 9, 17, 12, 34, 57),
+					}
+				)
+			],
+			"actual_qty": [frappe._dict({**dict(after_sle), "actual_qty": -9})],
+			"valuation_rate": [frappe._dict({**dict(after_sle), "valuation_rate": 2_001})],
+		}
+
+		for label, source_rows in corruptions.items():
+			with (
+				self.subTest(corruption=label),
+				patch.object(correction, "_stock_snapshot_fields", return_value=tuple(after_sle)),
+				patch.object(correction, "_stock_source_snapshot", return_value=source_rows),
+				patch.object(correction, "_locked_bin_snapshot", return_value=bin_before),
+				patch.object(correction, "_stock_pair_range", return_value=source_rows),
+				patch.object(
+					correction,
+					"_external_invoice_ledger_snapshot",
+					return_value=external_ledgers,
+				),
+				self.assertRaises(frappe.ValidationError),
+			):
+				correction._verify_terminal_stock_state(doc, plan)
+
+	def test_terminal_stock_date_verification_rejects_bin_range_or_external_drift(self):
+		plan, after_sle, bin_before, external_ledgers = _terminal_stock_date_plan()
+		doc = _Invoice(doctype="Sales Invoice", name="TEST-STOCK-SI")
+		foreign_sle = frappe._dict(
+			name="SLE-FOREIGN",
+			item_code=after_sle.item_code,
+			warehouse=after_sle.warehouse,
+		)
+		corruptions = {
+			"bin": (
+				{**bin_before, "actual_qty": 89},
+				[after_sle],
+				external_ledgers,
+			),
+			"locked_range": (
+				bin_before,
+				[after_sle, foreign_sle],
+				external_ledgers,
+			),
+			"external_allocation": (
+				bin_before,
+				[after_sle],
+				{
+					"payment_ledger_entries": [{"name": "PLE-1", "amount": -19_000}],
+					"advance_payment_ledger_entries": [],
+				},
+			),
+		}
+
+		for label, (bin_after, range_after, external_after) in corruptions.items():
+			with (
+				self.subTest(corruption=label),
+				patch.object(correction, "_stock_snapshot_fields", return_value=tuple(after_sle)),
+				patch.object(correction, "_stock_source_snapshot", return_value=[after_sle]),
+				patch.object(correction, "_locked_bin_snapshot", return_value=bin_after),
+				patch.object(correction, "_stock_pair_range", return_value=range_after),
+				patch.object(correction, "_locked_stock_reservations", return_value=[]),
+				patch.object(
+					correction,
+					"_external_invoice_ledger_snapshot",
+					return_value=external_after,
+				),
+				self.assertRaises(frappe.ValidationError),
+			):
+				correction._verify_terminal_stock_state(doc, plan)
 
 	def test_invoice_action_availability_tracks_pos_state_outstanding_and_used_action(self):
 		base_values = {
@@ -1198,7 +1469,7 @@ class TestAccountingCorrection(TestCase):
 				for action, available in expected.items():
 					self.assertEqual(context["available_actions"][action], available)
 
-	def test_stock_backed_invoice_date_action_is_not_offered(self):
+	def test_stock_backed_invoice_date_action_is_offered_until_used(self):
 		doc = _Invoice(
 			doctype="Sales Invoice",
 			name="TEST-STOCK-SI",
@@ -1226,7 +1497,20 @@ class TestAccountingCorrection(TestCase):
 		):
 			context = correction.get_correction_context("Sales Invoice", doc.name)
 
-		self.assertFalse(context["available_actions"][correction.CHANGE_POSTING_DATE])
+		self.assertTrue(context["available_actions"][correction.CHANGE_POSTING_DATE])
+
+		with (
+			patch.object(correction, "_get_authorized_document", return_value=doc),
+			patch.object(
+				correction,
+				"_used_actions",
+				return_value={correction.CHANGE_POSTING_DATE: {"name": "AUDIT-1"}},
+			),
+			patch.object(correction, "_mode_of_payment_choices", return_value=[]),
+		):
+			used_context = correction.get_correction_context("Sales Invoice", doc.name)
+
+		self.assertFalse(used_context["available_actions"][correction.CHANGE_POSTING_DATE])
 
 	def test_each_action_has_a_distinct_one_time_key(self):
 		keys = {
@@ -1689,6 +1973,35 @@ class TestAccountingCorrection(TestCase):
 					for _doctype, filters in deleted
 				}
 			),
+		)
+
+	def test_installer_grants_minimum_document_access_to_correction_role(self):
+		from fours_customizations import install
+
+		fake_db = SimpleNamespace(exists=lambda *args, **kwargs: False, commit=lambda: None)
+		fake_frappe = SimpleNamespace(db=fake_db)
+		with (
+			patch.object(install, "frappe", fake_frappe),
+			patch("frappe.permissions.add_permission") as add_permission,
+			patch("frappe.permissions.update_permission_property") as update_permission,
+		):
+			install.ensure_accounting_correction_permissions()
+
+		self.assertEqual(
+			add_permission.call_args_list,
+			[
+				call("Sales Invoice", "4S Accountant", permlevel=0, ptype="read"),
+				call("Payment Entry", "4S Accountant", permlevel=0, ptype="read"),
+			],
+		)
+		self.assertEqual(
+			update_permission.call_args_list,
+			[
+				call("Sales Invoice", "4S Accountant", 0, "read", 1),
+				call("Sales Invoice", "4S Accountant", 0, "select", 1),
+				call("Payment Entry", "4S Accountant", 0, "read", 1),
+				call("Payment Entry", "4S Accountant", 0, "select", 1),
+			],
 		)
 
 

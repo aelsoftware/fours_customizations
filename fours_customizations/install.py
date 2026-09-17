@@ -5,6 +5,7 @@ from frappe.custom.doctype.custom_field.custom_field import create_custom_fields
 def after_install():
 	"""Create custom fields, salary components, and seed singletons after install/migrate."""
 	ensure_accounting_correction_role()
+	ensure_accounting_correction_permissions()
 	ensure_accounting_correction_indexes()
 	create_designation_custom_fields()
 	create_salary_components()
@@ -30,6 +31,24 @@ def ensure_accounting_correction_indexes():
 			["payment_document", "payment_entry"],
 			"payment_document_payment_entry_index",
 		)
+	if frappe.db.table_exists("Repost Item Valuation"):
+		frappe.db.add_index(
+			"Repost Item Valuation",
+			["company", "docstatus", "status", "name"],
+			"four_s_company_docstatus_status_name",
+		)
+	if frappe.db.table_exists("Stock Reservation Entry"):
+		frappe.db.add_index(
+			"Stock Reservation Entry",
+			["item_code", "warehouse", "docstatus", "creation", "name"],
+			"four_s_item_wh_docstatus_creation_name",
+		)
+	if frappe.db.table_exists("Stock Closing Entry"):
+		frappe.db.add_index(
+			"Stock Closing Entry",
+			["company", "docstatus", "status", "to_date", "name"],
+			"four_s_company_docstatus_status_to_date_name",
+		)
 	frappe.db.commit()
 
 
@@ -43,6 +62,35 @@ def ensure_accounting_correction_role():
 				"desk_access": 1,
 			}
 		).insert(ignore_permissions=True)
+	frappe.db.commit()
+
+
+def ensure_accounting_correction_permissions():
+	"""Give the correction role the minimum document access its API requires.
+
+	Existing tenant grants are preserved.  On a fresh installation, read/select
+	access is enough to open a submitted document and use the separately guarded
+	correction endpoint; the endpoint does not rely on ordinary write permission.
+	"""
+	from frappe.permissions import add_permission, update_permission_property
+
+	for doctype in ("Sales Invoice", "Payment Entry"):
+		filters = {
+			"parent": doctype,
+			"role": "4S Accountant",
+			"permlevel": 0,
+			"if_owner": 0,
+		}
+		if not frappe.db.exists("Custom DocPerm", filters):
+			add_permission(doctype, "4S Accountant", permlevel=0, ptype="read")
+		for permission_type in ("read", "select"):
+			update_permission_property(
+				doctype,
+				"4S Accountant",
+				0,
+				permission_type,
+				1,
+			)
 	frappe.db.commit()
 
 

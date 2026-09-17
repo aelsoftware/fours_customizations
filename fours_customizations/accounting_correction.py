@@ -12,10 +12,11 @@ from __future__ import annotations
 import copy
 import hashlib
 from contextlib import contextmanager
+from datetime import datetime
 
 import frappe
 from frappe import _
-from frappe.utils import cint, flt, get_datetime, getdate, now_datetime
+from frappe.utils import add_days, cint, flt, get_datetime, getdate, now_datetime, today
 
 FOUR_S_COMPANY = "4S Industries Limited"
 ACCOUNTANT_ROLE = "4S Accountant"
@@ -222,6 +223,9 @@ ADVANCE_PAYMENT_LEDGER_SNAPSHOT_FIELDS = (
 PAYMENT_LEDGER_NUMERIC_FIELDS = {"amount", "amount_in_account_currency"}
 ADVANCE_PAYMENT_LEDGER_NUMERIC_FIELDS = {"amount", "base_amount", "exchange_rate"}
 
+STOCK_EVIDENCE_VERSION = 1
+STOCK_OPERATION = "Terminal Stock Ledger date retime"
+
 
 @frappe.whitelist()
 def get_correction_context(doctype: str, name: str) -> dict:
@@ -230,9 +234,8 @@ def get_correction_context(doctype: str, name: str) -> dict:
 	used = _used_actions(doc)
 	payment_rows = _invoice_payment_rows(doc) if doctype == "Sales Invoice" else []
 
-	stock_backed_invoice = doctype == "Sales Invoice" and cint(doc.get("update_stock"))
 	available = {
-		CHANGE_POSTING_DATE: not stock_backed_invoice and CHANGE_POSTING_DATE not in used,
+		CHANGE_POSTING_DATE: CHANGE_POSTING_DATE not in used,
 		CHANGE_MODE_OF_PAYMENT: CHANGE_MODE_OF_PAYMENT not in used,
 	}
 	if doctype == "Sales Invoice":
@@ -302,7 +305,16 @@ def apply_correction(
 	new_reference_no: str | None = None,
 	new_reference_date: str | None = None,
 ) -> dict:
-	"""Apply one tightly-scoped correction and repost every affected ledger."""
+	"""Apply one tightly-scoped correction and repost every affected ledger.
+
+	Once the submitted document is locked this function owns failure handling for
+	the current transaction.  A failed correction performs a full rollback before
+	reraising.  Frappe savepoint rollbacks deliberately leave transaction callback
+	queues intact, which could otherwise emit realtime or webhook events for rows
+	that no longer exist if a server-side caller caught the exception and committed
+	later.  Callers must therefore treat a correction failure as transaction-
+	terminal; earlier work in the same transaction is rolled back with it.
+	"""
 	if doctype not in DOCTYPE_ACTIONS or action not in DOCTYPE_ACTIONS[doctype]:
 		frappe.throw(_("This accounting correction is not supported."))
 
@@ -311,15 +323,61 @@ def apply_correction(
 		frappe.throw(
 			_("Correction reason must contain at least {0} characters.").format(MIN_REASON_LENGTH)
 		)
-
-	# Row locking makes the one-use rule deterministic even if two browser tabs
-	# submit the same action at the same time.
-	doc = _get_authorized_document(doctype, name, for_update=True)
-	if not expected_modified or get_datetime(expected_modified) != get_datetime(doc.modified):
+	if getattr(frappe.db, "_disable_transaction_control", 0):
 		frappe.throw(
-			_("This document changed after the correction window was opened. Reload it and review the latest values before trying again."),
-			title=_("Document Changed"),
+			_("Accounting corrections cannot run while database transaction control is disabled.")
 		)
+
+	try:
+		# Row locking makes the one-use rule deterministic even if two browser
+		# tabs submit the same action at the same time.  It is deliberately inside
+		# this rollback boundary so even stale-document failures release the lock.
+		doc = _get_authorized_document(doctype, name, for_update=True)
+		if not expected_modified or get_datetime(expected_modified) != get_datetime(doc.modified):
+			frappe.throw(
+				_("This document changed after the correction window was opened. Reload it and review the latest values before trying again."),
+				title=_("Document Changed"),
+			)
+
+		return _apply_correction_transaction(
+			doc=doc,
+			action=action,
+			reason=reason,
+			new_posting_date=new_posting_date,
+			new_mode_of_payment=new_mode_of_payment,
+			payment_row=payment_row,
+			payment_allocations=payment_allocations,
+			account_side=account_side,
+			new_reference_no=new_reference_no,
+			new_reference_date=new_reference_date,
+		)
+	except Exception as correction_error:
+		# This is intentionally a full rollback, not ``ROLLBACK TO SAVEPOINT``.
+		# Besides reverting SQL it clears Frappe's before/after commit callbacks,
+		# runs rollback cleanup, and releases every lock acquired by this attempt.
+		try:
+			frappe.db.rollback()
+		except Exception as rollback_error:
+			# A failed rollback means atomicity is unproven.  Surface that technical
+			# failure (with the original correction error chained) so no caller can
+			# mistake it for an ordinary validation rejection and continue writing.
+			raise rollback_error from correction_error
+		raise
+
+
+def _apply_correction_transaction(
+	*,
+	doc,
+	action: str,
+	reason: str,
+	new_posting_date: str | None,
+	new_mode_of_payment: str | None,
+	payment_row: str | None,
+	payment_allocations: str | list[dict] | None,
+	account_side: str | None,
+	new_reference_no: str | None,
+	new_reference_date: str | None,
+) -> dict:
 	key = _action_key(doc.doctype, doc.name, action)
 	if frappe.db.exists(AUDIT_DOCTYPE, {"unique_action_key": key}):
 		frappe.throw(
@@ -331,6 +389,13 @@ def apply_correction(
 	else:
 		_validate_sales_invoice_correction_dependencies(doc, action)
 	_lock_active_ledger_rows(doc)
+	stock_plan = None
+	if (
+		doc.doctype == "Sales Invoice"
+		and action == CHANGE_POSTING_DATE
+		and cint(doc.get("update_stock"))
+	):
+		stock_plan = _prepare_stock_date_change(doc, new_posting_date)
 
 	old_doc = copy.deepcopy(doc)
 	old_values = _document_state(old_doc)
@@ -349,11 +414,17 @@ def apply_correction(
 			new_reference_no=new_reference_no,
 			new_reference_date=new_reference_date,
 		)
+		if stock_plan:
+			change_details["stock_repost_plan"] = stock_plan
 		_validate_protected_amounts(doc, protected_before, action)
 		_validate_protected_document(old_doc, doc, action, change_details)
 		_save_submitted_document(doc)
 		_validate_protected_amounts(doc, protected_before, action)
 		_validate_protected_document(old_doc, doc, action, change_details)
+
+		stock_evidence = None
+		if stock_plan:
+			stock_evidence = _retime_terminal_stock_entries(doc, stock_plan)
 
 		repost_reference = _repost_accounting_ledger(doc)
 		doc.reload()
@@ -372,6 +443,7 @@ def apply_correction(
 			ledger_before=ledger_before,
 			ledger_after=ledger_after,
 			repost_reference=repost_reference,
+			stock_evidence=stock_evidence,
 		)
 		_add_timeline_comment(doc, log, action, reason, old_values, _document_state(doc))
 
@@ -449,13 +521,6 @@ def _validate_payment_entry_correction_dependencies(doc):
 
 
 def _validate_sales_invoice_correction_dependencies(doc, action: str):
-	if action == CHANGE_POSTING_DATE and cint(doc.get("update_stock")):
-		frappe.throw(
-			_(
-				"Posting Date cannot be changed here for a stock-backed Sales Invoice because stock valuation reposting is asynchronous."
-			),
-			title=_("Stock-backed Date Change Not Supported"),
-		)
 	_validate_immutable_ledger_is_disabled()
 	_validate_open_accounting_dates(doc, doc.posting_date, doc.posting_date)
 	_validate_sales_invoice_not_reconciled(doc)
@@ -720,13 +785,6 @@ def _apply_requested_change(doc, action: str, **values) -> dict:
 
 
 def _change_posting_date(doc, new_posting_date: str | None) -> dict:
-	if doc.doctype == "Sales Invoice" and cint(doc.get("update_stock")):
-		frappe.throw(
-			_(
-				"Posting Date cannot be changed here for a stock-backed Sales Invoice because stock valuation reposting is asynchronous."
-			),
-			title=_("Stock-backed Date Change Not Supported"),
-		)
 	if not new_posting_date:
 		frappe.throw(_("New Posting Date is required."))
 	new_date = getdate(new_posting_date)
@@ -824,6 +882,655 @@ def _validate_correction_date_is_open(doc, posting_date, is_opening: bool):
 			),
 			title=_("Closed Accounting Period"),
 		)
+
+
+def _prepare_stock_date_change(doc, new_posting_date: str | None) -> dict:
+	"""Lock and validate the deliberately narrow atomic stock-date topology.
+
+	A submitted stock invoice may be moved only when its entries are terminal for
+	every item/warehouse pair.  That makes the date move order-preserving: no
+	downstream valuation can change, so every non-date stock value must retain
+	its exact preimage.  Anything more complex belongs in a reviewed stock
+	reversal workflow, not a one-click accounting correction.
+	"""
+	from erpnext.accounts.utils import get_fiscal_year
+	from erpnext.stock.utils import get_combine_datetime
+
+	if not new_posting_date:
+		frappe.throw(_("New Posting Date is required."))
+	new_date = getdate(new_posting_date)
+	old_date = getdate(doc.posting_date)
+	if new_date == old_date:
+		frappe.throw(_("Choose a different Posting Date."))
+
+	_validate_open_accounting_dates(doc, old_date, new_date)
+	_validate_open_stock_dates(old_date, new_date)
+	if cint(doc.get("is_return")) or doc.get("return_against"):
+		frappe.throw(
+			_("Stock-backed return invoices require a reviewed stock reversal workflow."),
+			title=_("Stock Return Dependency"),
+		)
+	if doc.get("amended_from") or frappe.db.exists(
+		"Sales Invoice", {"amended_from": doc.name}
+	):
+		frappe.throw(
+			_("An invoice in an amendment chain cannot use the stock-date correction."),
+			title=_("Amendment Dependency"),
+		)
+	if doc.get("packed_items") or frappe.db.exists(
+		"Packed Item", {"parenttype": "Sales Invoice", "parent": doc.name}
+	):
+		frappe.throw(
+			_("A stock invoice containing packed items cannot use this date correction."),
+			title=_("Packed Item Dependency"),
+		)
+	if any(row.get("target_warehouse") for row in (doc.get("items") or [])):
+		frappe.throw(
+			_("An internal-transfer invoice cannot use this stock-date correction."),
+			title=_("Warehouse Transfer Dependency"),
+		)
+	if any(row.get("delivery_note") or row.get("dn_detail") for row in (doc.get("items") or [])):
+		frappe.throw(
+			_("An invoice linked to a Delivery Note cannot use this stock-date correction."),
+			title=_("Delivery Note Dependency"),
+		)
+
+	posting_time = doc.get("posting_time") or "00:00:00"
+	old_datetime = get_datetime(get_combine_datetime(old_date, posting_time))
+	new_datetime = get_datetime(get_combine_datetime(new_date, posting_time))
+	cutoff = min(old_datetime, new_datetime)
+
+	_lock_stock_repost_queue(doc.company)
+	_validate_no_stock_closing_after(doc.company, cutoff)
+
+	source_sles = _stock_source_snapshot(doc.name, for_update=True)
+	if not source_sles:
+		frappe.throw(
+			_("This stock-backed invoice has no active Stock Ledger Entries."),
+			title=_("Stock Ledger Missing"),
+		)
+	_validate_stock_source_topology(doc, source_sles)
+
+	pairs = sorted({(row.item_code, row.warehouse) for row in source_sles})
+	bin_before = []
+	pair_evidence = []
+	for item_code, warehouse in pairs:
+		locked_rows = _stock_pair_range(
+			item_code=item_code,
+			warehouse=warehouse,
+			cutoff=cutoff,
+			company=doc.company,
+			for_update=True,
+		)
+		foreign_rows = [
+			row
+			for row in locked_rows
+			if row.voucher_type != doc.doctype or row.voucher_no != doc.name
+		]
+		if foreign_rows:
+			first = foreign_rows[0]
+			frappe.throw(
+				_(
+					"The stock date cannot be moved because {0} {1} is later in the valuation chain for item {2} in {3}."
+				).format(
+					frappe.bold(first.voucher_type),
+					frappe.bold(first.voucher_no),
+					frappe.bold(item_code),
+					frappe.bold(warehouse),
+				),
+				title=_("Later Stock Transaction Exists"),
+			)
+
+		pair_source = [
+			row for row in source_sles if row.item_code == item_code and row.warehouse == warehouse
+		]
+		if {row.name for row in locked_rows} != {row.name for row in pair_source}:
+			frappe.throw(
+				_("The active Stock Ledger topology changed while the correction was being prepared."),
+				title=_("Stock Ledger Changed"),
+			)
+		reservation_rows = _locked_stock_reservations(item_code, warehouse, new_datetime)
+		reserved_stock = _net_reserved_stock(reservation_rows)
+		terminal_sle = _validate_terminal_stock_chain(
+			item_code=item_code,
+			warehouse=warehouse,
+			company=doc.company,
+			new_datetime=new_datetime,
+			pair_source=pair_source,
+			voucher_no=doc.name,
+			reserved_stock=reserved_stock,
+		)
+		bin_snapshot = _locked_bin_snapshot(item_code, warehouse)
+		_validate_bin_matches_terminal_sle(bin_snapshot, terminal_sle)
+		bin_before.append(bin_snapshot)
+		pair_evidence.append(
+			{
+				"item_code": item_code,
+				"warehouse": warehouse,
+				"terminal_sle": terminal_sle.name,
+				"reserved_stock_at_target": reserved_stock,
+				"reservation_rows": [dict(row) for row in reservation_rows],
+				"bin": _stock_bin_evidence(bin_snapshot),
+			}
+		)
+
+	return {
+		"old_posting_date": str(old_date),
+		"new_posting_date": str(new_date),
+		"posting_time": str(posting_time),
+		"old_posting_datetime": str(old_datetime),
+		"new_posting_datetime": str(new_datetime),
+		"new_fiscal_year": get_fiscal_year(new_date, company=doc.company)[0],
+		"company": doc.company,
+		"cutoff": str(cutoff),
+		"source_sles": [dict(row) for row in source_sles],
+		"source_sle_names": [row.name for row in source_sles],
+		"pairs": [
+			{"item_code": item_code, "warehouse": warehouse}
+			for item_code, warehouse in pairs
+		],
+		"bin_before": bin_before,
+		"pair_evidence": pair_evidence,
+		"external_payment_ledgers_before": _external_invoice_ledger_snapshot(doc.name),
+	}
+
+
+def _validate_open_stock_dates(old_date, new_date):
+	"""Enforce stock freezes without honoring an operational role exemption."""
+	settings = frappe.get_cached_doc("Stock Settings")
+	frozen_upto = settings.get("stock_frozen_upto")
+	frozen_days = cint(settings.get("stock_frozen_upto_days"))
+	for posting_date in {getdate(old_date), getdate(new_date)}:
+		if frozen_upto and posting_date <= getdate(frozen_upto):
+			frappe.throw(
+				_("Stock corrections cannot use a date on or before {0}.").format(
+					frappe.bold(str(getdate(frozen_upto)))
+				),
+				title=_("Stock Frozen"),
+			)
+		if frozen_days and add_days(posting_date, frozen_days) <= getdate(today()):
+			frappe.throw(
+				_("Stock corrections cannot change transactions older than {0} days.").format(
+					frappe.bold(frozen_days)
+				),
+				title=_("Stock Frozen"),
+			)
+
+
+def _lock_stock_repost_queue(company: str):
+	# ``after_migrate`` installs a covering index for this locking read so it
+	# serializes only this company's unfinished repost range.
+	rows = frappe.db.sql(
+		"""
+		SELECT name, status
+		FROM `tabRepost Item Valuation`
+		WHERE company = %(company)s
+			AND docstatus = 1
+			AND status IN ('Queued', 'In Progress', 'Failed')
+		ORDER BY name
+		FOR UPDATE
+		""",
+		{"company": company},
+		as_dict=True,
+	)
+	if rows:
+		frappe.throw(
+			_(
+				"Resolve pending or failed stock repost {0} before changing a stock invoice date."
+			).format(frappe.bold(", ".join(row.name for row in rows))),
+			title=_("Stock Repost Pending"),
+		)
+
+
+def _validate_no_stock_closing_after(company: str, cutoff: datetime):
+	active = frappe.db.sql(
+		"""
+		SELECT name, status
+		FROM `tabStock Closing Entry`
+		WHERE company = %(company)s
+			AND docstatus = 1
+			AND status IN ('Queued', 'In Progress', 'Failed')
+		ORDER BY name
+		FOR UPDATE
+		""",
+		{"company": company},
+		as_dict=True,
+	)
+	if active:
+		frappe.throw(
+			_("Resolve stock closing entry {0} before changing a stock invoice date.").format(
+				frappe.bold(", ".join(row.name for row in active))
+			),
+			title=_("Stock Closing Pending"),
+		)
+
+	rows = frappe.db.sql(
+		"""
+		SELECT name, to_date
+		FROM `tabStock Closing Entry`
+		WHERE company = %(company)s
+			AND docstatus = 1
+			AND status = 'Completed'
+			AND to_date >= %(cutoff_date)s
+		ORDER BY to_date, name
+		LIMIT 1
+		FOR UPDATE
+		""",
+		{"company": company, "cutoff_date": getdate(cutoff)},
+		as_dict=True,
+	)
+	if rows:
+		frappe.throw(
+			_("Stock is closed by {0} through {1}; the invoice date cannot be moved across it.").format(
+				frappe.bold(rows[0].name), frappe.bold(str(rows[0].to_date))
+			),
+			title=_("Stock Period Closed"),
+		)
+
+
+def _stock_snapshot_fields() -> tuple[str, ...]:
+	# Compare the full physical row, including custom inventory dimensions.  An
+	# allow-list can silently miss a field added by ERPNext or by this site and
+	# would weaken the claim that a date correction preserved every other value.
+	return tuple(dict.fromkeys(frappe.get_meta("Stock Ledger Entry").get_valid_columns()))
+
+
+def _stock_source_snapshot(voucher_no: str, *, for_update: bool = False) -> list[dict]:
+	fields = _stock_snapshot_fields()
+	return frappe.db.sql(
+		f"""
+		SELECT {", ".join(f"`{fieldname}`" for fieldname in fields)}
+		FROM `tabStock Ledger Entry`
+		WHERE voucher_type = 'Sales Invoice'
+			AND voucher_no = %(voucher_no)s
+			AND docstatus = 1
+			AND is_cancelled = 0
+		ORDER BY posting_datetime, creation, name
+		{"FOR UPDATE" if for_update else ""}
+		""",
+		{"voucher_no": voucher_no},
+		as_dict=True,
+	)
+
+
+def _stock_pair_range(
+	*,
+	item_code: str,
+	warehouse: str,
+	cutoff: datetime,
+	company: str,
+	for_update: bool = False,
+) -> list[dict]:
+	fields = _stock_snapshot_fields()
+	return frappe.db.sql(
+		f"""
+		SELECT {", ".join(f"`{fieldname}`" for fieldname in fields)}
+		FROM `tabStock Ledger Entry`
+		WHERE item_code = %(item_code)s
+			AND warehouse = %(warehouse)s
+			AND company = %(company)s
+			AND is_cancelled = 0
+			AND posting_datetime >= %(cutoff)s
+		ORDER BY posting_datetime, creation, name
+		{"FOR UPDATE" if for_update else ""}
+		""",
+		{
+			"item_code": item_code,
+			"warehouse": warehouse,
+			"company": company,
+			"cutoff": cutoff,
+		},
+		as_dict=True,
+	)
+
+
+def _validate_stock_source_topology(doc, source_sles: list[dict]):
+	from erpnext.accounts.utils import get_fiscal_year
+	from erpnext.stock.utils import get_combine_datetime
+
+	item_rows = {row.name: row for row in (doc.get("items") or [])}
+	item_codes = sorted({row.item_code for row in item_rows.values() if row.get("item_code")})
+	item_flags = {
+		row.name: row
+		for row in frappe.db.get_all(
+			"Item",
+			filters={"name": ("in", item_codes)},
+			fields=["name", "is_stock_item", "has_serial_no", "has_batch_no"],
+		)
+	}
+	expected_rows = {
+		row.name: row
+		for row in item_rows.values()
+		if cint(item_flags.get(row.item_code, {}).get("is_stock_item")) and flt(row.get("stock_qty"))
+	}
+	actual_by_detail = {}
+	for sle in source_sles:
+		actual_by_detail.setdefault(sle.voucher_detail_no, []).append(sle)
+
+	if set(actual_by_detail) != set(expected_rows) or any(
+		len(rows) != 1 for rows in actual_by_detail.values()
+	):
+		frappe.throw(
+			_("Every stock item row must map to exactly one active Stock Ledger Entry."),
+			title=_("Unsupported Stock Topology"),
+		)
+
+	expected_fiscal_year = get_fiscal_year(doc.posting_date, company=doc.company)[0]
+	for detail_name, item in expected_rows.items():
+		sle = actual_by_detail[detail_name][0]
+		flags = item_flags[item.item_code]
+		expected_datetime = get_datetime(
+			get_combine_datetime(doc.posting_date, doc.get("posting_time") or "00:00:00")
+		)
+		if (
+			cint(sle.docstatus) != 1
+			or sle.company != doc.company
+			or getdate(sle.posting_date) != getdate(doc.posting_date)
+			or str(sle.posting_time) != str(doc.get("posting_time") or "00:00:00")
+			or get_datetime(sle.posting_datetime) != expected_datetime
+			or sle.fiscal_year != expected_fiscal_year
+		):
+			frappe.throw(
+				_("The source Stock Ledger date, company, or submitted state is inconsistent."),
+				title=_("Stock Ledger Mismatch"),
+			)
+		if (
+			cint(flags.has_serial_no)
+			or cint(flags.has_batch_no)
+			or item.get("serial_no")
+			or item.get("batch_no")
+			or item.get("serial_and_batch_bundle")
+			or sle.get("serial_no")
+			or sle.get("batch_no")
+			or sle.get("serial_and_batch_bundle")
+			or cint(sle.get("has_serial_no"))
+			or cint(sle.get("has_batch_no"))
+		):
+			frappe.throw(
+				_("Serial-numbered and batch-controlled items cannot use this date correction."),
+				title=_("Serial or Batch Dependency"),
+			)
+		if sle.get("dependant_sle_voucher_detail_no"):
+			frappe.throw(
+				_("A dependent Stock Ledger chain cannot use this date correction."),
+				title=_("Dependent Stock Ledger"),
+			)
+		if sle.item_code != item.item_code or sle.warehouse != item.warehouse:
+			frappe.throw(
+				_("The Sales Invoice item and Stock Ledger warehouse mapping is inconsistent."),
+				title=_("Stock Ledger Mismatch"),
+			)
+		if abs(flt(sle.actual_qty) + flt(item.stock_qty)) > 0.000001:
+			frappe.throw(
+				_("The Sales Invoice quantity and Stock Ledger quantity are inconsistent."),
+				title=_("Stock Ledger Mismatch"),
+			)
+		if abs(flt(sle.valuation_rate)) <= 0.000001:
+			frappe.throw(
+				_("Zero-valued stock entries require a reviewed stock correction."),
+				title=_("Zero Stock Valuation"),
+			)
+
+	if frappe.db.exists(
+		"Serial and Batch Bundle",
+		{"voucher_type": doc.doctype, "voucher_no": doc.name, "docstatus": ("<", 2)},
+	):
+		frappe.throw(
+			_("A Serial and Batch Bundle is linked to this invoice."),
+			title=_("Serial or Batch Dependency"),
+		)
+
+
+def _validate_terminal_stock_chain(
+	*,
+	item_code: str,
+	warehouse: str,
+	company: str,
+	new_datetime: datetime,
+	pair_source: list[dict],
+	voucher_no: str,
+	reserved_stock: float,
+):
+	"""Prove the source chain already has internally consistent stock values."""
+	previous = frappe.db.sql(
+		"""
+		SELECT name, qty_after_transaction, valuation_rate, stock_value, stock_queue
+		FROM `tabStock Ledger Entry`
+		WHERE item_code = %(item_code)s
+			AND warehouse = %(warehouse)s
+			AND company = %(company)s
+			AND is_cancelled = 0
+			AND NOT (voucher_type = 'Sales Invoice' AND voucher_no = %(voucher_no)s)
+			AND posting_datetime < %(new_datetime)s
+		ORDER BY posting_datetime DESC, creation DESC, name DESC
+		LIMIT 1
+		FOR UPDATE
+		""",
+		{
+			"item_code": item_code,
+			"warehouse": warehouse,
+			"company": company,
+			"voucher_no": voucher_no,
+			"new_datetime": new_datetime,
+		},
+		as_dict=True,
+	)
+	float_precision, currency_precision, rate_precision = _stock_precisions()
+	qty = flt(previous[0].qty_after_transaction, float_precision) if previous else 0.0
+	stock_value = flt(previous[0].stock_value, currency_precision) if previous else 0.0
+	if previous and abs(flt(previous[0].valuation_rate)) <= 0.000001:
+		frappe.throw(
+			_("The preceding stock entry has a zero valuation rate."),
+			title=_("Zero Stock Valuation"),
+		)
+
+	ordered = sorted(
+		pair_source,
+		key=lambda row: (
+			get_datetime(row.posting_datetime),
+			get_datetime(row.creation),
+			row.name,
+		),
+	)
+	for sle in ordered:
+		qty = flt(qty + flt(sle.actual_qty), float_precision)
+		available_qty = flt(qty - reserved_stock, float_precision)
+		if available_qty < 0:
+			frappe.throw(
+				_(
+					"Moving this invoice would leave insufficient unreserved stock for item {0} in {1}. "
+					"Available after reservations: {2}."
+				).format(
+					frappe.bold(item_code),
+					frappe.bold(warehouse),
+					frappe.bold(available_qty),
+				),
+				title=_("Negative Stock"),
+			)
+		if qty != flt(sle.qty_after_transaction, float_precision):
+			frappe.throw(
+				_("The existing Stock Ledger running quantity is inconsistent."),
+				title=_("Stock Ledger Mismatch"),
+			)
+
+		stock_value = flt(
+			stock_value + flt(sle.stock_value_difference),
+			currency_precision,
+		)
+		if stock_value != flt(sle.stock_value, currency_precision):
+			frappe.throw(
+				_("The existing Stock Ledger running value is inconsistent."),
+				title=_("Stock Ledger Mismatch"),
+			)
+		if qty:
+			expected_rate = flt(stock_value / qty, rate_precision)
+			if expected_rate != flt(sle.valuation_rate, rate_precision):
+				frappe.throw(
+					_("The existing Stock Ledger valuation rate is inconsistent."),
+					title=_("Stock Ledger Mismatch"),
+				)
+		elif stock_value:
+			frappe.throw(
+				_("A zero stock balance cannot retain a non-zero stock value."),
+				title=_("Stock Ledger Mismatch"),
+			)
+
+		_validate_stock_queue(sle, company, float_precision, currency_precision)
+
+	return ordered[-1]
+
+
+def _stock_precisions() -> tuple[int, int, int]:
+	from frappe.model.meta import get_field_precision
+
+	meta = frappe.get_meta("Stock Ledger Entry")
+	float_precision = cint(frappe.db.get_default("float_precision")) or 3
+	currency_precision = get_field_precision(meta.get_field("stock_value"))
+	currency_precision = cint(currency_precision) or cint(
+		frappe.db.get_default("currency_precision")
+	) or 2
+	rate_precision = cint(frappe.get_precision("Stock Ledger Entry", "valuation_rate"))
+	return float_precision, currency_precision, rate_precision or currency_precision
+
+
+def _validate_stock_queue(sle, company: str, float_precision: int, currency_precision: int):
+	from erpnext.stock.utils import get_valuation_method
+
+	if get_valuation_method(sle.item_code, company) not in {"FIFO", "LIFO"}:
+		return
+	try:
+		queue = frappe.parse_json(sle.stock_queue or "[]")
+		queue_qty = flt(sum(flt(row[0]) for row in queue), float_precision)
+		queue_value = flt(sum(flt(row[0]) * flt(row[1]) for row in queue), currency_precision)
+	except (IndexError, TypeError, ValueError):
+		frappe.throw(
+			_("The existing Stock Ledger valuation queue is invalid."),
+			title=_("Stock Ledger Mismatch"),
+		)
+	if (
+		queue_qty != flt(sle.qty_after_transaction, float_precision)
+		or queue_value != flt(sle.stock_value, currency_precision)
+	):
+		frappe.throw(
+			_("The existing Stock Ledger valuation queue is inconsistent."),
+			title=_("Stock Ledger Mismatch"),
+		)
+
+
+def _locked_stock_reservations(
+	item_code: str, warehouse: str, new_datetime: datetime
+) -> list[dict]:
+	"""Lock and return the exact reservations ERPNext applies at this time."""
+	return frappe.db.sql(
+		"""
+		SELECT name, reserved_qty, delivered_qty, transferred_qty, consumed_qty, creation
+		FROM `tabStock Reservation Entry`
+		WHERE item_code = %(item_code)s
+			AND warehouse = %(warehouse)s
+			AND docstatus = 1
+			AND creation <= %(new_datetime)s
+		ORDER BY creation, name
+		FOR UPDATE
+		""",
+		{
+			"item_code": item_code,
+			"warehouse": warehouse,
+			"new_datetime": new_datetime,
+		},
+		as_dict=True,
+	)
+
+
+def _net_reserved_stock(rows: list[dict]) -> float:
+	return flt(
+		sum(
+			flt(row.reserved_qty)
+			- flt(row.delivered_qty)
+			- flt(row.transferred_qty)
+			- flt(row.consumed_qty)
+			for row in rows
+		),
+		_stock_precisions()[0],
+	)
+
+
+def _locked_bin_snapshot(item_code: str, warehouse: str) -> dict:
+	fields = tuple(dict.fromkeys(frappe.get_meta("Bin").get_valid_columns()))
+	rows = frappe.db.sql(
+		f"""
+		SELECT {", ".join(f"`{fieldname}`" for fieldname in fields)}
+		FROM `tabBin`
+		WHERE item_code = %(item_code)s AND warehouse = %(warehouse)s
+		FOR UPDATE
+		""",
+		{"item_code": item_code, "warehouse": warehouse},
+		as_dict=True,
+	)
+	if len(rows) != 1:
+		frappe.throw(
+			_("A unique Bin is required for item {0} in {1}.").format(
+				frappe.bold(item_code), frappe.bold(warehouse)
+			),
+			title=_("Bin Missing"),
+		)
+	return dict(rows[0])
+
+
+def _validate_bin_matches_terminal_sle(bin_snapshot: dict, terminal_sle: dict):
+	float_precision, currency_precision, rate_precision = _stock_precisions()
+	checks = (
+		("actual_qty", "qty_after_transaction", float_precision),
+		("valuation_rate", "valuation_rate", rate_precision),
+		("stock_value", "stock_value", currency_precision),
+	)
+	for bin_field, sle_field, precision in checks:
+		if flt(bin_snapshot.get(bin_field), precision) != flt(
+			terminal_sle.get(sle_field), precision
+		):
+			frappe.throw(
+				_("Bin {0} does not match terminal Stock Ledger field {1}.").format(
+					frappe.bold(bin_snapshot.get("name")), frappe.bold(sle_field)
+				),
+				title=_("Stock Ledger Mismatch"),
+			)
+
+
+def _stock_bin_evidence(bin_snapshot: dict) -> dict:
+	return {
+		fieldname: bin_snapshot.get(fieldname)
+		for fieldname in ("name", "item_code", "warehouse", "actual_qty", "valuation_rate", "stock_value")
+	}
+
+
+def _external_invoice_ledger_snapshot(invoice_name: str) -> dict:
+	return {
+		"payment_ledger_entries": frappe.db.sql(
+			"""
+			SELECT *
+			FROM `tabPayment Ledger Entry`
+			WHERE against_voucher_type = 'Sales Invoice'
+				AND against_voucher_no = %(invoice_name)s
+				AND NOT (voucher_type = 'Sales Invoice' AND voucher_no = %(invoice_name)s)
+			ORDER BY name
+			FOR UPDATE
+			""",
+			{"invoice_name": invoice_name},
+			as_dict=True,
+		),
+		"advance_payment_ledger_entries": frappe.db.sql(
+			"""
+			SELECT *
+			FROM `tabAdvance Payment Ledger Entry`
+			WHERE against_voucher_type = 'Sales Invoice'
+				AND against_voucher_no = %(invoice_name)s
+				AND NOT (voucher_type = 'Sales Invoice' AND voucher_no = %(invoice_name)s)
+			ORDER BY name
+			FOR UPDATE
+			""",
+			{"invoice_name": invoice_name},
+			as_dict=True,
+		),
+	}
 
 
 def _exclude_invoice_payment(doc) -> dict:
@@ -1416,6 +2123,194 @@ def _repost_accounting_ledger(doc) -> str:
 	return repost.name
 
 
+def _retime_terminal_stock_entries(doc, plan: dict) -> dict:
+	"""Move terminal source SLE dates and return durable verification evidence.
+
+	A standard Repost Item Valuation is intentionally not synthesized here.  In
+	ERPNext, ``Completed`` means its stock *and* accounting repost functions ran;
+	those functions commit internally and cannot be part of this atomic workflow.
+	The admitted topology is order-preserving, so no valuation is recalculated.
+	The immutable correction record stores the exact direct-retime evidence.
+	"""
+	from erpnext.stock.utils import get_combine_datetime
+
+	new_date = getdate(plan["new_posting_date"])
+	for sle in plan["source_sles"]:
+		new_datetime = get_datetime(get_combine_datetime(new_date, sle["posting_time"]))
+		frappe.db.set_value(
+			"Stock Ledger Entry",
+			sle["name"],
+			{
+				"posting_date": new_date,
+				"posting_time": sle["posting_time"],
+				"posting_datetime": new_datetime,
+				"fiscal_year": plan["new_fiscal_year"],
+			},
+		)
+
+	_verify_terminal_stock_state(doc, plan)
+	evidence = {
+		"version": STOCK_EVIDENCE_VERSION,
+		"operation": STOCK_OPERATION,
+		"company": plan["company"],
+		"voucher_type": doc.doctype,
+		"voucher_no": doc.name,
+		"old_posting_datetime": plan["old_posting_datetime"],
+		"new_posting_datetime": plan["new_posting_datetime"],
+		"new_fiscal_year": plan["new_fiscal_year"],
+		"source_entries": [
+			{
+				"name": sle["name"],
+				"old_posting_date": str(sle["posting_date"]),
+				"old_posting_time": str(sle["posting_time"]),
+				"old_posting_datetime": str(sle["posting_datetime"]),
+				"old_fiscal_year": sle.get("fiscal_year"),
+				"new_posting_date": plan["new_posting_date"],
+				"new_posting_time": str(sle["posting_time"]),
+				"new_posting_datetime": str(
+					get_datetime(get_combine_datetime(new_date, sle["posting_time"]))
+				),
+				"new_fiscal_year": plan["new_fiscal_year"],
+			}
+			for sle in plan["source_sles"]
+		],
+		"pairs": plan["pair_evidence"],
+		"verified": True,
+	}
+	plan["stock_correction_evidence"] = evidence
+	return evidence
+
+
+def _verify_terminal_stock_state(doc, plan: dict):
+	after_rows = _stock_source_snapshot(doc.name, for_update=True)
+	before_by_name = {row["name"]: row for row in plan["source_sles"]}
+	after_by_name = {row.name: row for row in after_rows}
+	if set(before_by_name) != set(after_by_name):
+		frappe.throw(
+			_("Stock verification failed: source Stock Ledger identities changed."),
+			title=_("Stock Verification Failed"),
+		)
+
+	new_date = getdate(plan["new_posting_date"])
+	new_datetime = get_datetime(plan["new_posting_datetime"])
+	ignored = {"posting_date", "posting_datetime", "fiscal_year", "modified", "modified_by"}
+	for name, before in before_by_name.items():
+		after = after_by_name[name]
+		if (
+			getdate(after.posting_date) != new_date
+			or get_datetime(after.posting_datetime) != new_datetime
+			or str(after.posting_time) != str(before["posting_time"])
+			or after.fiscal_year != plan["new_fiscal_year"]
+		):
+			frappe.throw(
+				_("Stock verification failed: Stock Ledger date/time was not moved exactly."),
+				title=_("Stock Verification Failed"),
+			)
+		for fieldname in _stock_snapshot_fields():
+			if fieldname in ignored:
+				continue
+			if _canonical_stock_value(fieldname, before.get(fieldname)) != _canonical_stock_value(
+				fieldname, after.get(fieldname)
+			):
+				frappe.throw(
+					_("Stock verification failed: {0} changed on Stock Ledger Entry {1}.").format(
+						frappe.bold(fieldname), frappe.bold(name)
+					),
+					title=_("Stock Verification Failed"),
+				)
+
+	for expected in plan["bin_before"]:
+		actual = _locked_bin_snapshot(expected["item_code"], expected["warehouse"])
+		for fieldname in expected:
+			if _canonical_stock_value(fieldname, expected.get(fieldname)) != _canonical_stock_value(
+				fieldname, actual.get(fieldname)
+			):
+				frappe.throw(
+					_("Stock verification failed: Bin {0} changed in field {1}.").format(
+						frappe.bold(expected["name"]), frappe.bold(fieldname)
+					),
+					title=_("Stock Verification Failed"),
+				)
+
+	cutoff = get_datetime(plan["cutoff"])
+	new_datetime = get_datetime(plan["new_posting_datetime"])
+	pair_evidence = {
+		(row["item_code"], row["warehouse"]): row for row in plan["pair_evidence"]
+	}
+	for pair in plan["pairs"]:
+		rows = _stock_pair_range(
+			item_code=pair["item_code"],
+			warehouse=pair["warehouse"],
+			cutoff=cutoff,
+			company=plan["company"],
+			for_update=True,
+		)
+		expected_names = {
+			row["name"]
+			for row in plan["source_sles"]
+			if row["item_code"] == pair["item_code"] and row["warehouse"] == pair["warehouse"]
+		}
+		if {row.name for row in rows} != expected_names:
+			frappe.throw(
+				_("Stock verification failed: another transaction entered the locked valuation range."),
+				title=_("Stock Verification Failed"),
+			)
+		pair_rows = [row for row in after_rows if row.name in expected_names]
+		terminal_sle = sorted(
+			pair_rows,
+			key=lambda row: (
+				get_datetime(row.posting_datetime),
+				get_datetime(row.creation),
+				row.name,
+			),
+		)[-1]
+		actual_bin = _locked_bin_snapshot(pair["item_code"], pair["warehouse"])
+		_validate_bin_matches_terminal_sle(actual_bin, terminal_sle)
+
+		expected_pair = pair_evidence[(pair["item_code"], pair["warehouse"])]
+		actual_reservations = _locked_stock_reservations(
+			pair["item_code"], pair["warehouse"], new_datetime
+		)
+		if _canonical_rows(actual_reservations) != _canonical_rows(
+			expected_pair["reservation_rows"]
+		) or _net_reserved_stock(actual_reservations) != flt(
+			expected_pair["reserved_stock_at_target"], _stock_precisions()[0]
+		):
+			frappe.throw(
+				_("Stock verification failed: target-date reservations changed."),
+				title=_("Stock Verification Failed"),
+			)
+
+	if _canonical_rows(_external_invoice_ledger_snapshot(doc.name)) != _canonical_rows(
+		plan["external_payment_ledgers_before"]
+	):
+		frappe.throw(
+			_("Stock verification failed: an external payment allocation changed."),
+			title=_("Stock Verification Failed"),
+		)
+
+
+def _canonical_stock_value(fieldname: str, value):
+	field = frappe.get_meta("Stock Ledger Entry").get_field(fieldname)
+	if field and field.fieldtype in {
+		"Currency",
+		"Float",
+		"Int",
+		"Percent",
+		"Check",
+	}:
+		return flt(value, 9)
+	if fieldname == "stock_queue":
+		return frappe.as_json(frappe.parse_json(value or "[]"))
+	if isinstance(value, datetime):
+		return str(value)
+	return value or ""
+
+
+def _canonical_rows(value) -> str:
+	return frappe.as_json(value)
+
+
 @contextmanager
 def _temporary_payment_entry_reconciliation_dates(doc):
 	"""Let core replay legacy separate-advance rows without changing the source.
@@ -1689,23 +2584,8 @@ def _ledger_snapshot(doc) -> dict:
 		sle_entries = frappe.db.get_all(
 			"Stock Ledger Entry",
 			filters={"voucher_type": doc.doctype, "voucher_no": doc.name, "is_cancelled": 0},
-			fields=[
-				"posting_date",
-				"posting_time",
-				"item_code",
-				"warehouse",
-				"actual_qty",
-				"qty_after_transaction",
-				"incoming_rate",
-				"outgoing_rate",
-				"valuation_rate",
-				"stock_value",
-				"stock_value_difference",
-				"stock_queue",
-				"serial_and_batch_bundle",
-				"voucher_detail_no",
-			],
-			order_by="creation, name",
+			fields=list(_stock_snapshot_fields()),
+			order_by="posting_datetime, creation, name",
 		)
 
 	return {
@@ -1920,13 +2800,47 @@ def _verify_result(doc, action: str, details: dict, before: dict, after: dict):
 	_verify_active_gl_matches_document(doc, after)
 
 	if action == CHANGE_POSTING_DATE:
-		if doc.doctype == "Sales Invoice" and cint(doc.get("update_stock")):
-			frappe.throw(
-				_("Correction verification failed: stock-backed invoice dates are not supported.")
-			)
 		expected = getdate(details["new_posting_date"])
 		if getdate(doc.posting_date) != expected:
 			frappe.throw(_("Correction verification failed: the document still has the old date."))
+		if doc.doctype == "Sales Invoice" and cint(doc.get("update_stock")):
+			plan = details.get("stock_repost_plan")
+			evidence = plan.get("stock_correction_evidence") if plan else None
+			if (
+				not evidence
+				or evidence.get("version") != STOCK_EVIDENCE_VERSION
+				or evidence.get("operation") != STOCK_OPERATION
+				or not evidence.get("verified")
+			):
+				frappe.throw(
+					_("Correction verification failed: stock retime evidence is missing.")
+				)
+			_verify_terminal_stock_state(doc, plan)
+			_assert_ledger_rows_equal_except(
+				before["gl_entries"],
+				after["gl_entries"],
+				{
+					"posting_date",
+					"transaction_date",
+					"fiscal_year",
+					"reporting_currency_exchange_rate",
+					"debit_in_reporting_currency",
+					"credit_in_reporting_currency",
+				},
+				"General Ledger",
+			)
+			_assert_ledger_rows_equal_except(
+				before["payment_ledger_entries"],
+				after["payment_ledger_entries"],
+				{"posting_date"},
+				"Payment Ledger",
+			)
+			_assert_ledger_rows_equal_except(
+				before["advance_payment_ledger_entries"],
+				after["advance_payment_ledger_entries"],
+				set(),
+				"Advance Payment Ledger",
+			)
 		valid_ledger_dates = (
 			_payment_entry_ledger_posting_dates(doc)
 			if doc.doctype == "Payment Entry"
@@ -1998,6 +2912,8 @@ def _verify_result(doc, action: str, details: dict, before: dict, after: dict):
 			or len(payment_rows) != 1
 			or payment_rows[0]["mode_of_payment"] != details["new_mode_of_payment"]
 			or payment_rows[0]["account"] != details["target_account"]
+			or flt(doc.change_amount, doc.precision("change_amount")) != 0
+			or flt(doc.base_change_amount, doc.precision("base_change_amount")) != 0
 			or flt(doc.outstanding_amount, doc.precision("outstanding_amount")) != 0
 		):
 			frappe.throw(_("Correction verification failed: payment was not included."))
@@ -2160,6 +3076,7 @@ def _create_audit_log(
 	ledger_before: dict,
 	ledger_after: dict,
 	repost_reference: str,
+	stock_evidence: dict | None = None,
 ):
 	log = frappe.get_doc(
 		{
@@ -2177,6 +3094,10 @@ def _create_audit_log(
 			"performed_on": now_datetime(),
 			"client_ip": getattr(frappe.local, "request_ip", None),
 			"repost_reference": repost_reference,
+			"stock_operation": STOCK_OPERATION if stock_evidence else None,
+			"stock_evidence": (
+				frappe.as_json(stock_evidence, indent=2) if stock_evidence else None
+			),
 			"unique_action_key": key,
 		}
 	)

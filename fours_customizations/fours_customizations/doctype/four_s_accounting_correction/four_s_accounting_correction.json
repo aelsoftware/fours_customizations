@@ -25,6 +25,8 @@
   "column_break_audit",
   "client_ip",
   "repost_reference",
+  "stock_operation",
+  "stock_evidence",
   "unique_action_key"
  ],
  "fields": [
@@ -161,6 +163,19 @@
    "fieldtype": "Link",
    "label": "Repost Accounting Ledger",
    "options": "Repost Accounting Ledger",
+   "read_only": 1
+  },
+  {
+   "fieldname": "stock_operation",
+   "fieldtype": "Data",
+   "label": "Stock Operation",
+   "read_only": 1
+  },
+  {
+   "fieldname": "stock_evidence",
+   "fieldtype": "Code",
+   "label": "Stock Verification Evidence (JSON)",
+   "options": "JSON",
    "read_only": 1
   },
   {
