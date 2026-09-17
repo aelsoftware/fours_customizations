@@ -4,10 +4,13 @@ from frappe.custom.doctype.custom_field.custom_field import create_custom_fields
 
 def after_install():
 	"""Create custom fields, salary components, and seed singletons after install/migrate."""
+	ensure_accounting_correction_role()
+	ensure_accounting_correction_indexes()
 	create_designation_custom_fields()
 	create_salary_components()
 	create_sales_invoice_custom_fields()
 	create_payment_entry_custom_fields()
+	lock_submitted_accounting_fields()
 	create_landed_cost_voucher_custom_fields()
 	create_item_custom_fields()
 	create_sales_order_custom_fields()
@@ -17,6 +20,89 @@ def after_install():
 	from fours_customizations.vox_kit_pos import ensure_vox_kit_pos_configuration
 
 	ensure_vox_kit_pos_configuration()
+
+
+def ensure_accounting_correction_indexes():
+	"""Keep reconciliation guards narrowly indexed before taking row locks."""
+	if frappe.db.table_exists("Bank Transaction Payments"):
+		frappe.db.add_index(
+			"Bank Transaction Payments",
+			["payment_document", "payment_entry"],
+			"payment_document_payment_entry_index",
+		)
+	frappe.db.commit()
+
+
+def ensure_accounting_correction_role():
+	"""Ensure the controlled correction permission can be assigned on every site."""
+	if not frappe.db.exists("Role", "4S Accountant"):
+		frappe.get_doc(
+			{
+				"doctype": "Role",
+				"role_name": "4S Accountant",
+				"desk_access": 1,
+			}
+		).insert(ignore_permissions=True)
+	frappe.db.commit()
+
+
+def lock_submitted_accounting_fields():
+	"""Remove legacy metadata overrides that allowed unaudited submitted edits.
+
+	The correction API deliberately bypasses update-after-submit validation only
+	inside one audited transaction. These fields must remain locked in the normal
+	form so the role cannot bypass the one-time and audit controls.
+	"""
+	unsafe_overrides = (
+		("Sales Invoice", "posting_date", "allow_on_submit"),
+		("Sales Invoice", "is_pos", "allow_on_submit"),
+		("Sales Invoice", "pos_profile", "allow_on_submit"),
+		("Sales Invoice", "paid_amount", "allow_on_submit"),
+		("Sales Invoice", "base_paid_amount", "allow_on_submit"),
+		("Sales Invoice", "change_amount", "allow_on_submit"),
+		("Sales Invoice", "base_change_amount", "allow_on_submit"),
+		("Sales Invoice", "outstanding_amount", "allow_on_submit"),
+		("Sales Invoice", "payments", "allow_on_submit"),
+		("Sales Invoice", "paid_amount", "read_only"),
+		("Sales Invoice Payment", "mode_of_payment", "allow_on_submit"),
+		("Sales Invoice Payment", "account", "allow_on_submit"),
+		("Sales Invoice Payment", "amount", "allow_on_submit"),
+		("Sales Invoice Payment", "base_amount", "allow_on_submit"),
+		("Sales Invoice Payment", "type", "allow_on_submit"),
+		("Sales Invoice Payment", "default", "allow_on_submit"),
+		("Payment Entry", "posting_date", "allow_on_submit"),
+		("Payment Entry", "mode_of_payment", "allow_on_submit"),
+		("Payment Entry", "paid_from", "allow_on_submit"),
+		("Payment Entry", "paid_to", "allow_on_submit"),
+		("Payment Entry", "paid_from_account_currency", "allow_on_submit"),
+		("Payment Entry", "paid_to_account_currency", "allow_on_submit"),
+		("Payment Entry", "paid_from_account_type", "allow_on_submit"),
+		("Payment Entry", "paid_to_account_type", "allow_on_submit"),
+		("Payment Entry", "reference_no", "allow_on_submit"),
+		("Payment Entry", "reference_date", "allow_on_submit"),
+		("Payment Entry", "paid_amount", "allow_on_submit"),
+		("Payment Entry", "received_amount", "allow_on_submit"),
+		("Payment Entry", "base_paid_amount", "allow_on_submit"),
+		("Payment Entry", "base_received_amount", "allow_on_submit"),
+		("Payment Entry", "total_allocated_amount", "allow_on_submit"),
+		("Payment Entry", "unallocated_amount", "allow_on_submit"),
+		("Payment Entry", "difference_amount", "allow_on_submit"),
+		("Payment Entry", "source_exchange_rate", "allow_on_submit"),
+		("Payment Entry", "target_exchange_rate", "allow_on_submit"),
+	)
+	for doc_type, field_name, property_name in unsafe_overrides:
+		frappe.db.delete(
+			"Property Setter",
+			{
+				"doc_type": doc_type,
+				"field_name": field_name,
+				"property": property_name,
+			},
+		)
+	frappe.clear_cache(doctype="Sales Invoice")
+	frappe.clear_cache(doctype="Sales Invoice Payment")
+	frappe.clear_cache(doctype="Payment Entry")
+	frappe.db.commit()
 
 
 def create_designation_custom_fields():

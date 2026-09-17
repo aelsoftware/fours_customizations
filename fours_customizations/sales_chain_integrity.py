@@ -556,6 +556,9 @@ def validate_goods_return_comes_from_store(doc, method=None):
 	  * an audited override, ``flags.allow_manual_goods_return``, for the rare
 	    case that has to be put right by hand.
 	"""
+	if frappe.flags.get("in_four_s_accounting_correction"):
+		return
+
 	if not doc.get("is_return"):
 		return
 	if doc.flags.get("from_dn_return"):

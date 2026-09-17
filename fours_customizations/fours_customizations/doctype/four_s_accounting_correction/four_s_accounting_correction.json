@@ -1,0 +1,209 @@
+{
+ "actions": [],
+ "autoname": "hash",
+ "creation": "2026-09-17 00:00:00.000000",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "reference_section",
+  "reference_doctype",
+  "reference_name",
+  "column_break_reference",
+  "action",
+  "company",
+  "reason_section",
+  "reason",
+  "values_section",
+  "old_values",
+  "new_values",
+  "ledger_section",
+  "ledger_before",
+  "ledger_after",
+  "audit_section",
+  "performed_by",
+  "performed_on",
+  "column_break_audit",
+  "client_ip",
+  "repost_reference",
+  "unique_action_key"
+ ],
+ "fields": [
+  {
+   "fieldname": "reference_section",
+   "fieldtype": "Section Break",
+   "label": "Corrected Document"
+  },
+  {
+   "fieldname": "reference_doctype",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Document Type",
+   "options": "DocType",
+   "read_only": 1,
+   "reqd": 1
+  },
+  {
+   "fieldname": "reference_name",
+   "fieldtype": "Dynamic Link",
+   "in_list_view": 1,
+   "label": "Document",
+   "options": "reference_doctype",
+   "read_only": 1,
+   "reqd": 1
+  },
+  {
+   "fieldname": "column_break_reference",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "action",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "label": "Action",
+   "options": "Change Posting Date\nExclude Invoice Payment\nInclude Invoice Payment\nChange Mode of Payment",
+   "read_only": 1,
+   "reqd": 1
+  },
+  {
+   "fieldname": "company",
+   "fieldtype": "Link",
+   "label": "Company",
+   "options": "Company",
+   "read_only": 1,
+   "reqd": 1
+  },
+  {
+   "fieldname": "reason_section",
+   "fieldtype": "Section Break",
+   "label": "Reason"
+  },
+  {
+   "fieldname": "reason",
+   "fieldtype": "Small Text",
+   "label": "Correction Reason",
+   "read_only": 1,
+   "reqd": 1
+  },
+  {
+   "collapsible": 1,
+   "fieldname": "values_section",
+   "fieldtype": "Section Break",
+   "label": "Before and After Values"
+  },
+  {
+   "fieldname": "old_values",
+   "fieldtype": "Code",
+   "label": "Old Values (JSON)",
+   "options": "JSON",
+   "read_only": 1
+  },
+  {
+   "fieldname": "new_values",
+   "fieldtype": "Code",
+   "label": "New Values (JSON)",
+   "options": "JSON",
+   "read_only": 1
+  },
+  {
+   "collapsible": 1,
+   "fieldname": "ledger_section",
+   "fieldtype": "Section Break",
+   "label": "Ledger Verification"
+  },
+  {
+   "fieldname": "ledger_before",
+   "fieldtype": "Code",
+   "label": "Ledger Before (JSON)",
+   "options": "JSON",
+   "read_only": 1
+  },
+  {
+   "description": "Snapshot taken immediately after the document and accounting ledgers are reposted.",
+   "fieldname": "ledger_after",
+   "fieldtype": "Code",
+   "label": "Ledger After (JSON)",
+   "options": "JSON",
+   "read_only": 1
+  },
+  {
+   "fieldname": "audit_section",
+   "fieldtype": "Section Break",
+   "label": "Audit"
+  },
+  {
+   "fieldname": "performed_by",
+   "fieldtype": "Link",
+   "label": "Performed By",
+   "options": "User",
+   "read_only": 1,
+   "reqd": 1
+  },
+  {
+   "fieldname": "performed_on",
+   "fieldtype": "Datetime",
+   "in_list_view": 1,
+   "label": "Performed On",
+   "read_only": 1,
+   "reqd": 1
+  },
+  {
+   "fieldname": "column_break_audit",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "client_ip",
+   "fieldtype": "Data",
+   "label": "Client IP",
+   "read_only": 1
+  },
+  {
+   "fieldname": "repost_reference",
+   "fieldtype": "Link",
+   "label": "Repost Accounting Ledger",
+   "options": "Repost Accounting Ledger",
+   "read_only": 1
+  },
+  {
+   "fieldname": "unique_action_key",
+   "fieldtype": "Data",
+   "hidden": 1,
+   "label": "Unique Action Key",
+   "read_only": 1,
+   "reqd": 1,
+   "unique": 1
+  }
+ ],
+ "index_web_pages_for_search": 0,
+ "links": [],
+ "modified": "2026-09-17 00:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Fours Customizations",
+ "name": "Four S Accounting Correction",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "export": 1,
+   "read": 1,
+   "report": 1,
+   "role": "4S Accountant"
+  },
+  {
+   "export": 1,
+   "read": 1,
+   "report": 1,
+   "role": "Accounts Manager"
+  },
+  {
+   "export": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager"
+  }
+ ],
+ "search_fields": "reference_name,action,performed_by",
+ "sort_field": "performed_on",
+ "sort_order": "DESC",
+ "states": [],
+ "title_field": "reference_name",
+ "track_changes": 1
+}

@@ -89,6 +89,9 @@ def _sync_custom_sales_person_to_team(doc):
 
 def before_validate(doc, method=None):
         """Resolve either Sales Person input before Frappe checks mandatory data."""
+        if frappe.flags.get("in_four_s_accounting_correction"):
+                return
+
         _sync_custom_sales_person_to_team(doc)
 
         if doc.company != FOUR_S_COMPANY or getattr(doc, "custom_sales_person", None):
@@ -219,6 +222,9 @@ def before_submit(doc, method=None):
 
 def before_save(doc, method=None):
         """Auto-enable advance allocation and prevent Include Payment from forcing update_stock on."""
+        if frappe.flags.get("in_four_s_accounting_correction"):
+                return
+
         if _is_automation_enabled(doc.company):
                 doc.allocate_advances_automatically = 1
                 if doc.is_pos:

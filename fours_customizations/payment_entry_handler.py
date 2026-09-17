@@ -1,8 +1,8 @@
 import frappe
-from frappe.utils import flt
+from erpnext.accounts.doctype.payment_entry.payment_entry import get_reference_details
 from erpnext.accounts.party import get_party_account
 from erpnext.accounts.utils import get_outstanding_invoices
-from erpnext.accounts.doctype.payment_entry.payment_entry import get_reference_details
+from frappe.utils import flt
 
 from fours_customizations.fours_customizations.doctype.four_s_industries_settings.four_s_industries_settings import (
 	get_settings,
@@ -21,6 +21,9 @@ def validate(doc, method=None):
 	"Pay" refunds to a Customer (claw commission back). Without the field a
 	refund would silently escape the commission deduction.
 	"""
+	if frappe.flags.get("in_four_s_accounting_correction"):
+		return
+
 	try:
 		settings = get_settings()
 	except Exception:

@@ -46,7 +46,11 @@ required_apps = ["kit_pos"]
 
 # include js in doctype views
 doctype_js = {
-	"Sales Invoice": "public/js/sales_invoice.js",
+	"Sales Invoice": [
+		"public/js/sales_invoice.js",
+		"public/js/accounting_correction.js",
+	],
+	"Payment Entry": "public/js/accounting_correction.js",
 	"Payroll Entry": "public/js/payroll_entry.js",
 	"Sales Order": "public/js/sales_order.js",
 }
