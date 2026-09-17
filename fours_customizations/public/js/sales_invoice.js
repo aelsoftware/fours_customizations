@@ -45,13 +45,17 @@ frappe.ui.form.on("Sales Invoice", {
 });
 
 async function resolve_typed_link(frm, fieldname) {
-	if (frm.doc[fieldname]) return;
-
 	const field = frm.fields_dict[fieldname];
-	const typed_value = field?.get_input_value?.()?.trim();
+	const input_value = field?.get_input_value?.();
+	const typed_value = typeof input_value === "string" ? input_value.trim() : input_value;
 	if (!typed_value || !field.validate_link_and_fetch) return;
+	if (frm.doc[fieldname] === typed_value) return;
 
-	const resolved_value = await field.validate_link_and_fetch(typed_value);
+	let resolved_value = await field.validate_link_and_fetch(typed_value);
+	if (!resolved_value) {
+		resolved_value = await resolve_unique_link_result(field, typed_value);
+	}
+
 	if (resolved_value) {
 		await frm.set_value(fieldname, resolved_value);
 		return;
@@ -64,6 +68,33 @@ async function resolve_typed_link(frm, fieldname) {
 			[label, frappe.utils.escape_html(typed_value)],
 		),
 	);
+}
+
+async function resolve_unique_link_result(field, typed_value) {
+	if (!field.get_search_args) return;
+
+	const { message: results = [] } = await frappe.call({
+		method: "frappe.desk.search.search_link",
+		args: field.get_search_args(typed_value),
+	});
+	const typed_key = normalize_link_text(typed_value);
+	const matches = results.filter((result) => {
+		const values = [result.value, result.label];
+		if (result.description) {
+			values.push(result.description.split(",", 1)[0]);
+		}
+		return values.some((value) => normalize_link_text(value) === typed_key);
+	});
+
+	if (matches.length !== 1) return;
+	return field.validate_link_and_fetch(matches[0].value);
+}
+
+function normalize_link_text(value) {
+	return String(value || "")
+		.trim()
+		.replace(/\s+/g, " ")
+		.toLocaleLowerCase();
 }
 
 // Adjust Price — correct a price after the Delivery Note has gone out.
