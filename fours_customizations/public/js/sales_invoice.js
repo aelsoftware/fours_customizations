@@ -47,8 +47,23 @@ frappe.ui.form.on("Sales Invoice", {
 async function resolve_typed_link(frm, fieldname) {
 	const field = frm.fields_dict[fieldname];
 	const input_value = field?.get_input_value?.();
-	const typed_value = typeof input_value === "string" ? input_value.trim() : input_value;
-	if (!typed_value || !field.validate_link_and_fetch) return;
+	let typed_value = typeof input_value === "string" ? input_value.trim() : input_value;
+	if (!field?.validate_link_and_fetch) return;
+
+	// Clicking Save moves focus out of a Link field. Frappe starts validating
+	// that field on blur, but it does not wait for that request before starting
+	// the form's validate handlers. Let the native validation finish first so a
+	// late response cannot clear a value that we recover below.
+	if (field.inside_change_event) {
+		await frappe.after_ajax();
+		const settled_input = field.get_input_value?.();
+		if (settled_input) {
+			typed_value =
+				typeof settled_input === "string" ? settled_input.trim() : settled_input;
+		}
+	}
+	if (!typed_value) return;
+
 	if (frm.doc[fieldname] === typed_value) return;
 
 	let resolved_value = await field.validate_link_and_fetch(typed_value);
@@ -58,6 +73,13 @@ async function resolve_typed_link(frm, fieldname) {
 
 	if (resolved_value) {
 		await frm.set_value(fieldname, resolved_value);
+		if (frm.doc[fieldname] !== resolved_value) {
+			frappe.throw(
+				__("Could not finish validating {0}. Please select it once more.", [
+					__(field.df.label || fieldname),
+				]),
+			);
+		}
 		return;
 	}
 
