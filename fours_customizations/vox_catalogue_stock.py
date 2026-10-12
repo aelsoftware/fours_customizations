@@ -48,7 +48,21 @@ def _enabled(company):
     enabled = config.get(COMPANY, False)
     if type(enabled) not in (bool, int) or enabled not in (0, 1):
         raise ValueError("Invalid goat workflow configuration")
-    return bool(enabled)
+    if not enabled:
+        return False
+    # Same supersede switch as vox_work_orders._enabled: the provider returns {}
+    # while Kit POS BOM production is on or paused for this company.
+    try:
+        from kit_pos.connector import production
+
+        policy = production.engine_policy(company)
+        if policy is not None:
+            read = policy.get if isinstance(policy, dict) else lambda key: getattr(policy, key, None)
+            if read("supersedes_vox_pilot") is True and read("mode") in ("on", "paused"):
+                return False
+    except Exception:
+        pass
+    return True
 
 
 def _identity(value):

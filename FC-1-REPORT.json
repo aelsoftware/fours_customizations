@@ -1,0 +1,38 @@
+{
+  "id": "FC-1",
+  "summary": "DESIGN 11.2 implemented on ent-bom/FC-1 (fours). (1) Supersede switch: vox_work_orders._enabled and vox_catalogue_stock._enabled keep all previous checks (scope, malformed config still raises), and only when the pilot would be enabled they ask kit_pos.connector.production.engine_policy(company); a policy with supersedes_vox_pilot is True and mode 'on' or 'paused' makes them return False. ImportError, a missing function or any exception keeps the previous answer (True). The policy is read as attributes or as a mapping, so either Policy shape EN-1 picks works. Effects: route_invoice_warehouses / ensure_invoice_production / finalize_invoice_valuation are no-ops for Vox and the availability provider returns {}; guard_invoice_trace still runs first in both hooks. (2) ensure_negative_stock_for_doc runs one SQL per document (UNION of BOM.item and BOM Item.item_code, docstatus=1, is_active=1, parenttype='BOM', any company, restricted to the document's codes) and skips those rows before any balance lookup; the Vox MENU exclusion is unchanged and a MENU-only Vox sale issues no query. (3) mark_reconciled (and so on_stock_reconciliation_submit) clears custom_negative_stock_auto_enabled for every counted item but resets allow_negative_stock only for items that are NOT rows of an active submitted BOM; dishes (VXN-DRY-GOAT etc.) and all other items are reset as before. Pilot guards, credit-pilot guards/verifier and modifiers are untouched and pinned by source hash in the new U20 module. W0-SNAP: ent-bom/main (1cd7654) already is the production tree, so no stacked merge was needed and there is nothing to rebase onto.",
+  "commit": "238489f",
+  "branch": "ent-bom/FC-1",
+  "base": "ent-bom/main 1cd7654",
+  "needs_rebase_onto": null,
+  "files": [
+    {"file": "fours_customizations/vox_work_orders.py", "change": "_enabled only: supersede switch after the existing config checks (engine_policy on/paused + supersedes_vox_pilot -> False; any import/call failure -> previous behaviour)"},
+    {"file": "fours_customizations/vox_catalogue_stock.py", "change": "_enabled only: the same supersede switch, so the availability provider returns {}"},
+    {"file": "fours_customizations/negative_stock_handler.py", "change": "ensure_negative_stock_for_doc: one BOM query per document, skips active-BOM items and rows of active BOMs, MENU exclusion kept; mark_reconciled: rows of active BOMs keep allow_negative_stock (auto-enabled marker still cleared); module docstring bullet for mark_reconciled updated (doc only)"},
+    {"file": "fours_customizations/tests/test_kit_bom_supersede.py", "change": "NEW U20 module (21 tests): stubbed kit_pos API (on/paused/off/no supersede/missing function/missing package/raising), both _enabled agree, pilot off or other site never asks kit_pos, superseded hooks write nothing but still call guard_invoice_trace, provider {}; helper and Stock Reconciliation against the real SQL on an in-memory SQLite copy of BOM/BOM Item (VX-0134-1, Wheat Flour, 88760, Rice, VXN-GOAT-PORTION, raw items: no flag; drink: flagged; inactive/draft/cancelled BOMs and non-BOM parenttype don't count; one query per document; Wheat Flour keeps flag, VXN-DRY-GOAT reset); protected functions pinned by sha256 of their source; hook wiring of the guards checked"},
+    {"file": "fours_customizations/tests/test_vox_negative_stock_guard.py", "change": "stub db gains sql=Mock(return_value=[]) (the helper now issues its BOM query); assertions unchanged"}
+  ],
+  "tests_run": [
+    {"test": "fours_customizations.tests.test_kit_bom_supersede (lab bench python in kasc-bom-lab, PYTHONPATH=copy of this tree, no site touched)", "result": "21/21 OK"},
+    {"test": "fours_customizations.tests.test_vox_negative_stock_guard", "result": "9/9 OK"},
+    {"test": "every fours test module run separately, ent-bom/main vs ent-bom/FC-1", "result": "identical per module except the new module: OK on both for bom_dashboard 20, vox_catalogue_stock 35, vox_invoice_valuation 52, vox_kit_pos 4, vox_kitchen_multi_ingredient 29, vox_modifiers 53, vox_negative_stock_guard 9, vox_pilot_material_request 20, vox_pilot_retirement 23, vox_raw_bin_valuation 35, vox_work_order_credit_gate 26, vox_work_orders 45. Pre-existing failures identical on base and branch (environment, not FC-1): accounting_correction 5F/59E, accounting_correction_pe_safety 32E, accounting_correction_stock_safety 3F/49E, vox_pilot_correction 17E, vox_pilot_credit 35E, nansana_paid_cancellation import error, vox_goat_menu_activation import error (needs multax private file vox_goat_menu_activate_20260928.py)"},
+    {"test": "unittest discover over the whole tests dir, base vs branch", "result": "base 509 tests failures=8 errors=272; branch 530 tests failures=8 errors=272; the failing set is identical (diffed)"},
+    {"test": "11 hand mutants of the change (paused dropped x2, supersede return removed x2, 'is True' relaxed, helper skip removed, is_active dropped from BOM-item query, parenttype filter dropped, mark_reconciled resets all, is_active dropped from row query, mark_reconciled treats dishes as rows)", "result": "all 11 killed (the is_active-on-BOM-item mutant survived first, killed after adding a retired-dish fixture)"}
+  ],
+  "tests_not_run": [
+    {"test": "LB-6a T17 (cutover states) and T20 (hook order, fours before kit_pos)", "reason": "LB-6a lane package; needs EN-1..EN-5 engine code and the lab sites. FC-1 unit tests use the real SQL on SQLite, not MariaDB"},
+    {"test": "ruff", "reason": "not installed on kit-build and no pip install allowed; py_compile passes and the style follows the surrounding code"},
+    {"test": "against EN-1's real engine_policy", "reason": "kit_pos.connector.production does not exist yet (EN-1 in progress); tested against a stub module for both attribute and mapping Policy shapes"}
+  ],
+  "risks": [
+    "Supersede requires supersedes_vox_pilot to be exactly True and mode exactly 'on' or 'paused'. If EN-1 normalises these differently (e.g. 1, 'ON'), the pilot stays enabled and the engine sees ENGINE_CONFLICT_PILOT (fails closed and visible, not silent). LB/EN-1 reviewers should confirm the Policy shape.",
+    "Protected-function hash pins (test_kit_bom_supersede.PROTECTED) will fail on any later edit to those guards: intended (DESIGN 11.2 item 4), but a future reviewed change must update the hashes deliberately.",
+    "By the scope's rule, mark_reconciled keeps the flag for every row of an active BOM, which includes sub-assemblies that are dishes too: today only VX-0134-1 CHAPATI (row of Rolex BOM-88760-002; VXN-GOAT-PORTION is not a row of any BOM in the extract). Its flag goes to 0 only by the lead's D4/D6 data writes (DESIGN 7.4); a count will not reset it. The helper never sets it to 1 either.",
+    "The helper's BOM query is per document (not per process): one extra indexed query on every SI/DN before_submit while enable_negative_stock_automation=1, including ddamu's documents if fours runs there (core ERPNext tables only, schema-safe).",
+    "If the BOM query itself raises (DB failure), the before_submit / Stock Reconciliation on_submit fails instead of silently guessing; previously only set_value failures were swallowed in mark_reconciled."
+  ],
+  "open_questions": [
+    "EN-1: confirm Policy exposes .mode and .supersedes_vox_pilot (or is a mapping with those keys); FC-1 reads either.",
+    "Lead: the module docstring of negative_stock_handler got a one-line note about mark_reconciled; if 'diff touches only the three functions' is meant literally, that doc line can be dropped."
+  ]
+}

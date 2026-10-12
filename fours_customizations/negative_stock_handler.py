@@ -21,7 +21,8 @@ Behaviour
 
 * `mark_reconciled(item_codes)`:
     After the reconciliation submits, clears `custom_negative_stock_auto_enabled`
-    and resets `allow_negative_stock` to 0 on those items.
+    and resets `allow_negative_stock` to 0 on those items (rows of an active
+    BOM keep it).
 
 If nothing is negative, the cron picks the top-5 fastest-moving items (Req
 #7) — skipping items already requested within the last 30 days.
@@ -63,19 +64,47 @@ def ensure_negative_stock_for_doc(doc) -> None:
 	# hasn't yet taken effect (it's cached).
 	from erpnext.stock.utils import get_stock_balance
 
+	vox_menu = (
+		getattr(getattr(frappe, "local", None), "site", None) == "multax.kit.africa"
+		and doc.get("company") == "Vox Lounge Nansana"
+	)
+	codes = {
+		getattr(row, "item_code", None) for row in (doc.get("items") or [])
+	} - {None, ""}
+	if vox_menu:
+		codes -= set(VOX_KITCHEN_MENU)
+	# Recipe items (an active submitted BOM in any company) and the rows of such
+	# BOMs are never flagged here: dishes must fail closed rather than post from
+	# nothing, and kitchen ingredients keep the flag their owners chose. One
+	# query per document, reused for every row.
+	bom_items = set()
+	if codes:
+		bom_items = {
+			r[0] for r in frappe.db.sql(
+				"""
+				SELECT bom.item FROM `tabBOM` bom
+				WHERE bom.docstatus = 1 AND bom.is_active = 1 AND bom.item IN %(codes)s
+				UNION
+				SELECT bi.item_code FROM `tabBOM Item` bi
+				INNER JOIN `tabBOM` bom ON bom.name = bi.parent
+				WHERE bi.parenttype = 'BOM' AND bom.docstatus = 1 AND bom.is_active = 1
+					AND bi.item_code IN %(codes)s
+				""",
+				{"codes": tuple(codes)},
+			)
+		}
+
 	items_to_flag: list[str] = []
 	for row in (doc.get("items") or []):
 		item_code = getattr(row, "item_code", None)
 		if not item_code:
 			continue
-		if (
-			getattr(getattr(frappe, "local", None), "site", None) == "multax.kit.africa"
-			and doc.get("company") == "Vox Lounge Nansana"
-			and item_code in VOX_KITCHEN_MENU
-		):
+		if vox_menu and item_code in VOX_KITCHEN_MENU:
 			# Verified Work Orders already gate raw consumption and finished
 			# stock before these dishes can post. In particular, a failed legacy
 			# balance lookup must never enable negative stock on a kitchen dish.
+			continue
+		if item_code in bom_items:
 			continue
 		warehouse = getattr(row, "warehouse", None) or doc.get("set_warehouse")
 		qty = flt(getattr(row, "qty", 0))
@@ -314,13 +343,33 @@ def reconcile_items(item_codes) -> str:
 
 
 def mark_reconciled(item_codes: list[str]) -> None:
-	"""Disable the auto-flag on items once reconciliation has completed."""
-	for ic in set(item_codes):
+	"""Disable the auto-flag on items once reconciliation has completed.
+
+	Ingredients (rows of an active submitted BOM) keep `allow_negative_stock`:
+	kitchen sales may legitimately run them below zero, and a count must not
+	make the next receipt or count fail. Every other item, dishes included,
+	is reset as before.
+	"""
+	codes = set(item_codes) - {None, ""}
+	ingredients = set()
+	if codes:
+		ingredients = {
+			r[0] for r in frappe.db.sql(
+				"""
+				SELECT DISTINCT bi.item_code FROM `tabBOM Item` bi
+				INNER JOIN `tabBOM` bom ON bom.name = bi.parent
+				WHERE bi.parenttype = 'BOM' AND bom.docstatus = 1 AND bom.is_active = 1
+					AND bi.item_code IN %(codes)s
+				""",
+				{"codes": tuple(codes)},
+			)
+		}
+	for ic in codes:
+		values = {"custom_negative_stock_auto_enabled": 0}
+		if ic not in ingredients:
+			values["allow_negative_stock"] = 0
 		try:
-			frappe.db.set_value("Item", ic, {
-				"allow_negative_stock": 0,
-				"custom_negative_stock_auto_enabled": 0,
-			}, update_modified=False)
+			frappe.db.set_value("Item", ic, values, update_modified=False)
 		except Exception:
 			pass
 

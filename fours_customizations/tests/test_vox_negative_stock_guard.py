@@ -20,7 +20,7 @@ class TestVoxNegativeStockGuard(TestCase):
 		from erpnext.stock import utils
 
 		self.settings = Doc(enable_negative_stock_automation=1)
-		self.db = SimpleNamespace(get_value=Mock(side_effect=self._value), set_value=Mock())
+		self.db = SimpleNamespace(get_value=Mock(side_effect=self._value), set_value=Mock(), sql=Mock(return_value=[]))
 		self.frappe = SimpleNamespace(db=self.db, local=SimpleNamespace(site="multax.kit.africa"), flags=Doc())
 		self.enterContext(patch.object(module, "frappe", self.frappe))
 		self.enterContext(patch.object(module, "get_settings", return_value=self.settings))
