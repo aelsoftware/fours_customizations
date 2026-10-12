@@ -38,6 +38,7 @@ from fours_customizations.fours_customizations.doctype.four_s_industries_setting
 	get_settings,
 )
 from fours_customizations.notifications import send_email, send_slack
+from fours_customizations.vox_kitchen_recipes import MENU as VOX_KITCHEN_MENU
 
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -66,6 +67,15 @@ def ensure_negative_stock_for_doc(doc) -> None:
 	for row in (doc.get("items") or []):
 		item_code = getattr(row, "item_code", None)
 		if not item_code:
+			continue
+		if (
+			getattr(getattr(frappe, "local", None), "site", None) == "multax.kit.africa"
+			and doc.get("company") == "Vox Lounge Nansana"
+			and item_code in VOX_KITCHEN_MENU
+		):
+			# Verified Work Orders already gate raw consumption and finished
+			# stock before these dishes can post. In particular, a failed legacy
+			# balance lookup must never enable negative stock on a kitchen dish.
 			continue
 		warehouse = getattr(row, "warehouse", None) or doc.get("set_warehouse")
 		qty = flt(getattr(row, "qty", 0))

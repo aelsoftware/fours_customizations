@@ -1,0 +1,19 @@
+{
+ "doctype": "DocType",
+ "name": "Vox Kitchen Modifier Option",
+ "module": "Fours Customizations",
+ "autoname": "prompt",
+ "engine": "InnoDB",
+ "field_order": ["company", "item_code", "public_id", "snapshot_hash", "recorded_by", "snapshot"],
+ "fields": [
+  {"fieldname": "company", "label": "Company", "fieldtype": "Link", "options": "Company", "reqd": 1, "read_only": 1, "in_list_view": 1},
+  {"fieldname": "item_code", "label": "Recorded Item", "fieldtype": "Data", "reqd": 1, "read_only": 1, "in_list_view": 1, "search_index": 1},
+  {"fieldname": "public_id", "label": "Public Option ID", "fieldtype": "Data", "read_only": 1, "reqd": 1, "unique": 1},
+  {"fieldname": "snapshot_hash", "label": "Audit Hash", "fieldtype": "Data", "length": 64, "read_only": 1, "reqd": 1},
+  {"fieldname": "recorded_by", "label": "Recorded By", "fieldtype": "Link", "options": "User", "read_only": 1, "reqd": 1},
+  {"fieldname": "snapshot", "label": "Private Audit Snapshot", "fieldtype": "Code", "options": "JSON", "read_only": 1, "reqd": 1}
+ ],
+ "permissions": [{"role": "System Manager", "read": 1, "select": 1, "report": 1}],
+ "sort_field": "creation",
+ "sort_order": "DESC"
+}

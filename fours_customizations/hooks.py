@@ -136,6 +136,26 @@ after_migrate = "fours_customizations.install.after_install"
 # 	"Event": "frappe.desk.doctype.event.event.has_permission",
 # }
 
+# Private immutable kitchen snapshots back the existing desktop modifier API.
+# Each provider is explicitly company/site opted in; DDAMU keeps its own stock
+# method. Vox Nansana produces the dedicated goat dishes through native WOs.
+kit_pos_modifier_provider = ["fours_customizations.vox_modifiers.provider"]
+kit_pos_catalogue_product_availability = [
+	"fours_customizations.vox_catalogue_stock.catalogue_availability",
+]
+# Exact management-approved credit pilot; not a site-wide unpaid-POS exception.
+kit_pos_verified_credit_invoice = [
+	"fours_customizations.vox_pilot_credit.verify_posted_credit",
+]
+has_permission = {
+	"Vox Kitchen Modifier Option": "fours_customizations.vox_modifiers.private_has_permission",
+	"Vox Kitchen Modifier Selection": "fours_customizations.vox_modifiers.private_has_permission",
+}
+permission_query_conditions = {
+	"Vox Kitchen Modifier Option": "fours_customizations.vox_modifiers.option_query_conditions",
+	"Vox Kitchen Modifier Selection": "fours_customizations.vox_modifiers.selection_query_conditions",
+}
+
 # DocType Class
 # ---------------
 # Override standard doctype classes
@@ -147,6 +167,26 @@ after_migrate = "fours_customizations.install.after_install"
 # Hook on document methods and events
 
 doc_events = {
+	"Kit POS Sale": {
+		"validate": "fours_customizations.vox_pilot_credit.guard_credit_source_write",
+		"on_trash": "fours_customizations.vox_pilot_credit.guard_credit_source_write",
+		"before_rename": "fours_customizations.vox_pilot_credit.guard_credit_source_write",
+	},
+	"Kit POS Sale Line": {
+		"validate": "fours_customizations.vox_pilot_credit.guard_credit_source_write",
+		"on_trash": "fours_customizations.vox_pilot_credit.guard_credit_source_write",
+		"before_rename": "fours_customizations.vox_pilot_credit.guard_credit_source_write",
+	},
+	"Kit POS Sale Payment": {
+		"validate": "fours_customizations.vox_pilot_credit.guard_credit_source_write",
+		"on_trash": "fours_customizations.vox_pilot_credit.guard_credit_source_write",
+		"before_rename": "fours_customizations.vox_pilot_credit.guard_credit_source_write",
+	},
+	"Comment": {
+		"validate": "fours_customizations.vox_pilot_credit.guard_credit_approval",
+		"on_trash": "fours_customizations.vox_pilot_credit.guard_credit_approval",
+		"before_rename": "fours_customizations.vox_pilot_credit.guard_credit_approval",
+	},
 	"Delivery Note": {
 		"before_submit": "fours_customizations.delivery_note_handler.before_submit",
 		# A goods return that has already credited the customer must not be
@@ -178,9 +218,25 @@ doc_events = {
 		"before_submit": "fours_customizations.salary_slip_handler.calculate_and_add_deductions",
 	},
 	"Sales Invoice": {
-		"on_submit": "fours_customizations.sales_invoice_handler.on_submit",
-		"before_validate": "fours_customizations.sales_invoice_handler.before_validate",
-		"before_submit": "fours_customizations.sales_invoice_handler.before_submit",
+		"on_submit": [
+			"fours_customizations.vox_work_orders.finalize_invoice_valuation",
+			"fours_customizations.sales_invoice_handler.on_submit",
+		],
+		"before_validate": [
+			"fours_customizations.sales_invoice_handler.before_validate",
+			"fours_customizations.vox_work_orders.route_invoice_warehouses",
+		],
+		"before_submit": [
+			"fours_customizations.vox_modifiers.validate_invoice_modifiers",
+			"fours_customizations.vox_work_orders.ensure_invoice_production",
+			# Production must precede the legacy negative-stock helper.
+			"fours_customizations.sales_invoice_handler.before_submit",
+		],
+		"before_update_after_submit": [
+			"fours_customizations.vox_pilot_credit.guard_credit_invoice",
+			"fours_customizations.vox_modifiers.validate_invoice_modifiers",
+			"fours_customizations.vox_work_orders.guard_invoice_trace",
+		],
 		"before_save": "fours_customizations.sales_invoice_handler.before_save",
 		# Goods coming back is the store's event to record. Accounts may correct a
 		# price, but may not credit a customer for stock nobody checked back in.
@@ -192,12 +248,16 @@ doc_events = {
 		# ignore_permissions, so these hold even where the native link check is
 		# switched off.
 		"before_cancel": [
+			"fours_customizations.vox_pilot_credit.guard_credit_invoice",
+			"fours_customizations.vox_work_orders.guard_invoice_trace",
 			"fours_customizations.sales_chain_integrity.validate_no_submitted_delivery_note",
 			"fours_customizations.sales_chain_integrity.validate_no_payment_allocated",
 			# ...and the mirror: never re-bill a customer for goods already back
 			# on our shelf by cancelling the credit note that paid for them.
 			"fours_customizations.sales_chain_integrity.validate_no_submitted_delivery_return",
 		],
+		"on_trash": "fours_customizations.vox_pilot_credit.guard_credit_invoice",
+		"before_rename": "fours_customizations.vox_pilot_credit.guard_credit_invoice",
 	},
 	"Sales Order": {
 		"before_submit": "fours_customizations.sales_order_handler.before_submit",
@@ -213,6 +273,20 @@ doc_events = {
 	},
 	"Stock Reconciliation": {
 		"on_submit": "fours_customizations.negative_stock_handler.on_stock_reconciliation_submit",
+	},
+	"Work Order": {
+		"validate": "fours_customizations.vox_work_orders.guard_generated_document",
+		"before_submit": "fours_customizations.vox_work_orders.guard_generated_document",
+		"before_update_after_submit": "fours_customizations.vox_work_orders.guard_generated_document",
+		"before_cancel": "fours_customizations.vox_work_orders.guard_generated_document",
+		"on_trash": "fours_customizations.vox_work_orders.guard_generated_document",
+	},
+	"Stock Entry": {
+		"validate": "fours_customizations.vox_work_orders.guard_generated_document",
+		"before_submit": "fours_customizations.vox_work_orders.guard_generated_document",
+		"before_update_after_submit": "fours_customizations.vox_work_orders.guard_generated_document",
+		"before_cancel": "fours_customizations.vox_work_orders.guard_generated_document",
+		"on_trash": "fours_customizations.vox_work_orders.guard_generated_document",
 	},
 }
 
@@ -256,9 +330,10 @@ override_whitelisted_methods = {
 # each overriding function accepts a `data` argument;
 # generated from the base implementation of the doctype dashboard,
 # along with any modifications made in other Frappe apps
-# override_doctype_dashboards = {
-# 	"Task": "fours_customizations.task.get_dashboard_data"
-# }
+# Correct obsolete subcontracting links using installed parent/child metadata.
+override_doctype_dashboards = {
+	"BOM": "fours_customizations.bom_dashboard.get_dashboard_data",
+}
 
 # exempt linked doctypes from being automatically cancelled
 #
