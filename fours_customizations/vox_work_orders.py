@@ -136,7 +136,22 @@ def _enabled(company):
     _require(isinstance(config, dict), UNAVAILABLE)
     value = config.get(company, False)
     _require(type(value) in (bool, int) and value in (0, 1), UNAVAILABLE)
-    return bool(value)
+    if not value:
+        return False
+    # Kit POS BOM production supersedes this pilot while its policy is on or
+    # paused. Without that function (older kit_pos), or if asking fails, the
+    # pilot keeps its previous behaviour; fours never rolls back below this.
+    try:
+        from kit_pos.connector import production
+
+        policy = production.engine_policy(company)
+        if policy is not None:
+            read = policy.get if isinstance(policy, dict) else lambda key: getattr(policy, key, None)
+            if read("supersedes_vox_pilot") is True and read("mode") in ("on", "paused"):
+                return False
+    except Exception:
+        pass
+    return True
 
 
 def _scoped_rows(invoice):
