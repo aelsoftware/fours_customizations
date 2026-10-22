@@ -54,7 +54,8 @@ doctype_js = {
 	"Payroll Entry": "public/js/payroll_entry.js",
 	"Sales Order": "public/js/sales_order.js",
 }
-# doctype_list_js = {"doctype" : "public/js/doctype_list.js"}
+# Quick Price Update (fqp-1): a button to the page on the Item Price list, for users who have the page.
+doctype_list_js = {"Item Price": "public/js/quick_price_item_price_list.js"}
 # doctype_tree_js = {"doctype" : "public/js/doctype_tree.js"}
 # doctype_calendar_js = {"doctype" : "public/js/doctype_calendar.js"}
 
@@ -150,10 +151,13 @@ kit_pos_verified_credit_invoice = [
 has_permission = {
 	"Vox Kitchen Modifier Option": "fours_customizations.vox_modifiers.private_has_permission",
 	"Vox Kitchen Modifier Selection": "fours_customizations.vox_modifiers.private_has_permission",
+	# Quick Price Update audit rows: readable by everyone with Item Price read (DocPerm read is 'All').
+	"Quick Price Change": "fours_customizations.fours_customizations.doctype.quick_price_change.quick_price_change.has_permission",
 }
 permission_query_conditions = {
 	"Vox Kitchen Modifier Option": "fours_customizations.vox_modifiers.option_query_conditions",
 	"Vox Kitchen Modifier Selection": "fours_customizations.vox_modifiers.selection_query_conditions",
+	"Quick Price Change": "fours_customizations.fours_customizations.doctype.quick_price_change.quick_price_change.query_conditions",
 }
 
 # DocType Class
@@ -342,7 +346,9 @@ override_doctype_dashboards = {
 # Ignore links to specified DocTypes when deleting documents
 # -----------------------------------------------------------
 
-# ignore_links_on_delete = ["Communication", "ToDo"]
+# The Quick Price Change audit rows link the Item, Item Price, Price List and Company they record: deleting one of
+# those keeps the audit row (with the old name) instead of being refused.
+ignore_links_on_delete = ["Quick Price Change"]
 
 # Request Events
 # ----------------

@@ -29,6 +29,23 @@ salary slips have been cancelled (when the final figures are frozen):
   Overtime Hours
 - Styled with the 4S Industries brand colours (green `#8FC643` / black `#221E1F`)
 
+### 4. **Quick Price Update** (desk page `quick-price-update`)
+One page to see and change selling prices, for every company of the site:
+- Pick a company you may access (Company User Permissions); its selling lists (those its invoices used in 180 days, its
+  POS Profiles', the default selling list) side by side, plus any enabled selling list you add
+- A list shared by several companies says so ("Standard Selling is used by ...: a change applies to all of them"), and
+  each item shows which other companies selling with that list also sell or stock it
+- Items the company sells or stocks (Item Defaults, invoice lines of 365 days, stock in its warehouses) or every sales
+  item; search by code/name/barcode, item group, "only without a price"; stock per warehouse; last change
+- A cell is editable only when Item Price permissions allow it (write for an existing price, create for a new one);
+  saves go through Item Price itself (max 100 per save, each on its own, stale-price check, changes of more than 30%
+  need a confirmation) and each one leaves a **Quick Price Change** row (company, item, list, unit, old/new rate, user,
+  reason, time)
+- Who sees the page follows Item Price read (every role that reads Item Prices except Kit TV Viewer, plus System
+  Manager); after changing who may read prices: `bench --site <site> execute fours_customizations.quick_price.setup.sync_access`
+- Reached from the Item Price list ("Quick Price Update"), the desk search and the **Pricing** workspace
+- Deploy kit and runbook: `deploy/` (RUNBOOK.md)
+
 ## Installation
 
 ### Prerequisites

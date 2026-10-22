@@ -1,0 +1,39 @@
+#!/bin/bash
+# fqp-1 LAB stand-in for Multax's supervisorctl (private lab bench only). Understands what deploy_fqp.sh calls:
+#   status [prog] | pid <prog> | signal HUP <web> | restart frappe-bench-workers: | start all | stop all
+# web = gunicorn as production's supervisor line (--preload, 2 workers on 127.0.0.1:18222); workers = one RQ worker.
+L=/home/frappe/fqp-bench
+WEB=frappe-bench-web:frappe-bench-frappe-web
+WRK=frappe-bench-workers:frappe-bench-frappe-short-worker-0
+echo "$(date -u +%FT%TZ) supervisorctl $*" >> $L/logs/supervisorctl-calls.log
+alive() { [ -f "$L/config/$1.pid" ] && kill -0 "$(cat "$L/config/$1.pid")" 2>/dev/null; }
+stopp() {
+  alive "$1" || return 0
+  local p; p=$(cat "$L/config/$1.pid"); kill -TERM "$p"
+  for _ in $(seq 1 60); do kill -0 "$p" 2>/dev/null || break; sleep 0.5; done
+  kill -0 "$p" 2>/dev/null && kill -KILL "$p"; rm -f "$L/config/$1.pid"
+}
+start() {
+  case $1 in
+    web) runuser -u frappe -- bash -c "cd $L/sites && exec setsid ../env/bin/python -m gunicorn -b 127.0.0.1:18222 -w 2 --max-requests 5000 --max-requests-jitter 500 -t 120 --graceful-timeout 30 --preload frappe.app:application >> $L/logs/web.log 2>&1 & echo \$! > $L/config/web.pid" ;;
+    worker) runuser -u frappe -- bash -c "cd $L/sites && exec setsid ../env/bin/python -m frappe.utils.bench_helper frappe worker --queue short,default >> $L/logs/worker.log 2>&1 & echo \$! > $L/config/worker.pid" ;;
+  esac
+  sleep 3
+}
+line() { if alive "$1"; then echo "$2                 RUNNING   pid $(cat $L/config/$1.pid), uptime 0:00:01"; else echo "$2                 STOPPED"; fi; }
+status() {
+  case "${1:-}" in
+    "$WEB") line web $WEB ;;
+    "") line web $WEB; line worker $WRK ;;
+    *) line worker $WRK ;;
+  esac
+}
+case "$1 ${2:-}" in
+  "status "*) status "${2:-}" ;;
+  "pid $WEB") cat $L/config/web.pid ;;
+  "signal HUP") [ "${3:-}" = "$WEB" ] && kill -HUP "$(cat $L/config/web.pid)" && echo "$WEB: signalled" ;;
+  "restart frappe-bench-workers:") stopp worker; echo "$WRK: stopped"; start worker; echo "$WRK: started" ;;
+  "start all") alive web || start web; alive worker || start worker; status ;;
+  "stop all") stopp web; stopp worker; status ;;
+  *) echo "lab supervisorctl: unsupported: $*" >&2; exit 2 ;;
+esac

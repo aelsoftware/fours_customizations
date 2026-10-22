@@ -21,6 +21,10 @@ def after_install():
 	from fours_customizations.vox_kit_pos import ensure_vox_kit_pos_configuration
 
 	ensure_vox_kit_pos_configuration()
+	from fours_customizations.quick_price.setup import sync_access
+
+	# Quick Price Update page / Pricing workspace roles follow Item Price read (never changes a DocPerm).
+	sync_access()
 
 
 def ensure_accounting_correction_indexes():

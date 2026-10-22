@@ -1,0 +1,24 @@
+{
+ "content": null,
+ "creation": "2026-10-22 12:00:00.000000",
+ "docstatus": 0,
+ "doctype": "Page",
+ "icon": "",
+ "idx": 0,
+ "modified": "2026-10-22 12:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Fours Customizations",
+ "name": "quick-price-update",
+ "owner": "Administrator",
+ "page_name": "quick-price-update",
+ "roles": [
+  {
+   "role": "System Manager"
+  }
+ ],
+ "script": null,
+ "standard": "Yes",
+ "style": null,
+ "system_page": 0,
+ "title": "Quick Price Update"
+}
