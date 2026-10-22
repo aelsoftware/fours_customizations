@@ -1,0 +1,319 @@
+{
+ "id": "FQP-1",
+ "title": "Quick Price Update for every company on multax.kit.africa, in fours_customizations",
+ "branch": "feat/quick-price-update",
+ "worktree": "/opt/build/fours-qp-wt",
+ "base": "7da0d29 (production fours_customizations on Multax, clean)",
+ "commit": "fe153b5c29512a574b35c06fb1a801d7d29a704c",
+ "commit_note": "single code commit; the branch head adds only this report (a later commit). Deploy either: the app tree is identical (git diff --stat <code> HEAD shows FQP-1-REPORT.json only). The kit was rehearsed with FQP_SHA=fe153b5c29512a574b35c06fb1a801d7d29a704c",
+ "summary": "Quick Price Update ported from Jamissang's jm-price-update into fours_customizations without anything Jamissang-specific (no settings, price control, floor, grants, fixed prices). Page quick-price-update: the user picks a company they may access (Company User Permissions; none = all); the company's selling lists (invoices of 180 days, its POS Profiles, the default selling list) are shown side by side, plus any enabled selling list added from a picker. Each list says which companies sell with it ('Standard Selling is used by 4S Industries Limited, Vox Lounge and Vox Lounge Nansana: a change applies to all of them'), each item says which other companies using that list also sell or stock it. Items = the company's (Item Defaults, invoice lines of 365 days, Bins) or all sales items; search, group, only-without-a-price; 100 per page; stock per company warehouse; last change. Cells are editable only where Item Price write (existing) / create (new) allows; every save goes through Item Price save()/insert() without ignore_permissions, one savepoint per change, <=100 per save, stale and changed-meanwhile checks (including a locking re-read against the REPEATABLE READ snapshot), >30% needs a confirmation, duplicates refused, UOM factors as ERPNext; each change writes a Quick Price Change row and the Item Price's Version. Page/workspace/icon roles follow Item Price read (minus Kit TV Viewer, plus System Manager) via a Custom Role synced on migrate; no permission is changed. Reached from the Item Price list button, desk search and the new Pricing workspace. Proof on a private lab bench in kasc-bom-lab (multax stand-in = labvox clone with production's Item Price rules): 36 tests OK, 43/43 hand mutants killed, headless Chromium as writer / 4S read-only / Kit TV Viewer, a two-connection race probe, and the deploy kit rehearsed forward, rollback and re-forward plus 4 negative gate probes.",
+ "permissions_today": {
+  "fact": "Today NO 4S user can update prices (facts of 2026-10-22: Item Price write/create = Sales Master Manager, Purchase Master Manager, Vox Accountant; 4S Accountant and Sales User read only). Nothing was changed.",
+  "what_the_page_does": "4S Accountants / Sales Users get the page (they read Item Prices) with every cell locked ('You may not change this price.'); a direct API call is refused with PermissionError (browser check fqp.reader). Vox Accountants can edit Standard Selling (and any list their rules allow) for the companies their User Permissions allow.",
+  "page_roles_on_a_production_shaped_lab": [
+   "4S Accountant",
+   "Purchase Master Manager",
+   "Sales Master Manager",
+   "Sales User",
+   "System Manager",
+   "Vox Accountant"
+  ],
+  "owner_decision": "Grant Item Price write (+ create for prices that do not exist yet) to the chosen role(s) in Role Permissions Manager. Warning: Standard Selling is one list for Vox Lounge, 4S and Vox Lounge Nansana - a 4S writer would change the bar prices too; a company-specific list (e.g. a 4S selling list used on 4S invoices/POS Profile) avoids that. After changing who may READ prices run: bench --site multax.kit.africa execute fours_customizations.quick_price.setup.sync_access"
+ },
+ "files": [
+  {
+   "file": ".gitignore",
+   "status": "M",
+   "change": "lab scratch and evidence dirs"
+  },
+  {
+   "file": "README.md",
+   "status": "M",
+   "change": "Quick Price Update section"
+  },
+  {
+   "file": "deploy/RUNBOOK.md",
+   "status": "A",
+   "change": "NEW runbook"
+  },
+  {
+   "file": "deploy/deploy_fqp.sh",
+   "status": "A",
+   "change": "NEW deploy kit: precheck|backup|code|build|migrate|reload|verify|postcheck|rollback|window|status"
+  },
+  {
+   "file": "deploy/fqp_check.py",
+   "status": "A",
+   "change": "NEW kit helper: sites/apps, pending patches+imports, facts, fingerprints, vox-fix, perms/switches compare, smoke, rollback-cleanup, jobs, assets, syntax/json"
+  },
+  {
+   "file": "deploy/lab/mklab.sh",
+   "status": "A",
+   "change": "NEW lab-only rehearsal/test tooling (never run on production)"
+  },
+  {
+   "file": "deploy/lab/mutate.py",
+   "status": "A",
+   "change": "NEW lab-only rehearsal/test tooling (never run on production)"
+  },
+  {
+   "file": "deploy/lab/negative.sh",
+   "status": "A",
+   "change": "NEW lab-only rehearsal/test tooling (never run on production)"
+  },
+  {
+   "file": "deploy/lab/perf.py",
+   "status": "A",
+   "change": "NEW lab-only rehearsal/test tooling (never run on production)"
+  },
+  {
+   "file": "deploy/lab/push-tree.sh",
+   "status": "A",
+   "change": "NEW lab-only rehearsal/test tooling (never run on production)"
+  },
+  {
+   "file": "deploy/lab/race_probe.py",
+   "status": "A",
+   "change": "NEW lab-only rehearsal/test tooling (never run on production)"
+  },
+  {
+   "file": "deploy/lab/reclone.sh",
+   "status": "A",
+   "change": "NEW lab-only rehearsal/test tooling (never run on production)"
+  },
+  {
+   "file": "deploy/lab/rehearse.sh",
+   "status": "A",
+   "change": "NEW lab-only rehearsal/test tooling (never run on production)"
+  },
+  {
+   "file": "deploy/lab/seed_ui.py",
+   "status": "A",
+   "change": "NEW lab-only rehearsal/test tooling (never run on production)"
+  },
+  {
+   "file": "deploy/lab/serve.sh",
+   "status": "A",
+   "change": "NEW lab-only rehearsal/test tooling (never run on production)"
+  },
+  {
+   "file": "deploy/lab/setup.sh",
+   "status": "A",
+   "change": "NEW lab-only rehearsal/test tooling (never run on production)"
+  },
+  {
+   "file": "deploy/lab/supervisorctl",
+   "status": "A",
+   "change": "NEW lab-only rehearsal/test tooling (never run on production)"
+  },
+  {
+   "file": "deploy/lab/teardown.sh",
+   "status": "A",
+   "change": "NEW lab-only rehearsal/test tooling (never run on production)"
+  },
+  {
+   "file": "deploy/lab/ui_check.mjs",
+   "status": "A",
+   "change": "NEW lab-only rehearsal/test tooling (never run on production)"
+  },
+  {
+   "file": "deploy/make_bundle.sh",
+   "status": "A",
+   "change": "NEW release bundle (commits after 7da0d29) for FQP_BUNDLE"
+  },
+  {
+   "file": "fours_customizations/desktop_icon/pricing.json",
+   "status": "A",
+   "change": "NEW Desktop Icon 'Pricing' (roles synced by setup.sync_access)"
+  },
+  {
+   "file": "fours_customizations/fours_customizations/doctype/quick_price_change/__init__.py",
+   "status": "A",
+   "change": "NEW package marker"
+  },
+  {
+   "file": "fours_customizations/fours_customizations/doctype/quick_price_change/quick_price_change.json",
+   "status": "A",
+   "change": "NEW audit DocType (company, item_code, item_name, price_list, uom, action Changed/Created, old_rate (0 when created), new_rate, item_price, shared_with, user, timestamp, source 'Quick Price Update', reason); DocPerm: All read/report/export/print (narrowed by hooks), System Manager read/write/delete; no create for anyone; track_changes"
+  },
+  {
+   "file": "fours_customizations/fours_customizations/doctype/quick_price_change/quick_price_change.py",
+   "status": "A",
+   "change": "NEW controller: insert only with the API's flag (or install/patch), edit/delete System Manager only; has_permission / query_conditions = Item Price read (or System Manager)"
+  },
+  {
+   "file": "fours_customizations/fours_customizations/page/__init__.py",
+   "status": "A",
+   "change": "NEW package marker"
+  },
+  {
+   "file": "fours_customizations/fours_customizations/page/quick_price_update/__init__.py",
+   "status": "A",
+   "change": "NEW package marker"
+  },
+  {
+   "file": "fours_customizations/fours_customizations/page/quick_price_update/quick_price_update.js",
+   "status": "A",
+   "change": "NEW page UI: company select, search, item group, only-without-a-price, all sales items, add/remove price lists, per-list used-by + shared notice, editable / locked cells (lock reason), stock per warehouse, last change, save dialog (shared notices, % change, optional reason, >30% confirmation), 100-change cap, results listing"
+  },
+  {
+   "file": "fours_customizations/fours_customizations/page/quick_price_update/quick_price_update.json",
+   "status": "A",
+   "change": "NEW standard Page quick-price-update (title Quick Price Update, module Fours Customizations, standard role System Manager; the rest via Custom Role)"
+  },
+  {
+   "file": "fours_customizations/fours_customizations/page/quick_price_update/quick_price_update.py",
+   "status": "A",
+   "change": "NEW package marker"
+  },
+  {
+   "file": "fours_customizations/fours_customizations/workspace/pricing/pricing.json",
+   "status": "A",
+   "change": "NEW public Workspace 'Pricing' (fours module): shortcuts Quick Price Update, Item Price, Price List, Quick Price Change"
+  },
+  {
+   "file": "fours_customizations/hooks.py",
+   "status": "M",
+   "change": "doctype_list_js Item Price; has_permission + permission_query_conditions for Quick Price Change; ignore_links_on_delete = ['Quick Price Change']"
+  },
+  {
+   "file": "fours_customizations/install.py",
+   "status": "M",
+   "change": "after_install (= after_migrate) also calls quick_price.setup.sync_access()"
+  },
+  {
+   "file": "fours_customizations/public/js/quick_price_item_price_list.js",
+   "status": "A",
+   "change": "NEW Item Price list button 'Quick Price Update' (only when frappe.boot.page_info has the page); extends ERPNext's list settings"
+  },
+  {
+   "file": "fours_customizations/quick_price/__init__.py",
+   "status": "A",
+   "change": "NEW package marker"
+  },
+  {
+   "file": "fours_customizations/quick_price/api.py",
+   "status": "A",
+   "change": "NEW whitelisted API (get_context, get_lists, get_items, save_prices): access (page roles, full Item Price read, Company / Price List / Item / Brand User Permissions), company lists (invoices 180 d + POS Profiles + Selling Settings default + user-added enabled selling lists), shared-list notice and 'also sold by' (invoice lines 365 d, Item Defaults, Bins), items query (company items or all sales items; search code/name/barcode, item group subtree, only-without-a-price), effective price as a new SI fetches it (erpnext get_item_price; stock-unit and unit-less records x factor), per-cell write/create dry run, duplicates; save_prices: <=100 changes, item-ordered locking, one savepoint each, deadlock = whole save aborted and reported, Item row lock + assert_fresh (locking re-read vs REPEATABLE READ snapshot), stale / effective-record / created-meanwhile checks, >30% needs confirm_large, Item Price save()/insert() without ignore_permissions, Quick Price Change row"
+  },
+  {
+   "file": "fours_customizations/quick_price/setup.py",
+   "status": "A",
+   "change": "NEW sync_access(): page Custom Role + Pricing Workspace / Desktop Icon roles = Item Price read roles - Kit TV Viewer + System Manager (runs on migrate; bench execute after permission changes). Never touches DocPerm/Custom DocPerm"
+  },
+  {
+   "file": "fours_customizations/tests/test_quick_price_update.py",
+   "status": "A",
+   "change": "NEW 36 integration tests (own companies / lists / items / users / Item Price rules inside the test transaction)"
+  },
+  {
+   "file": "fours_customizations/workspace_sidebar/pricing.json",
+   "status": "A",
+   "change": "NEW Workspace Sidebar 'Pricing' (Home, Quick Price Update, Item Price, Quick Price Change)"
+  }
+ ],
+ "tests_run": [
+  {
+   "test": "bench --site fqpm.lab run-tests --module fours_customizations.tests.test_quick_price_update (private lab bench, final commit deployed by the kit)",
+   "result": "36/36 OK (company access, Price List / Item User Permissions, page roles incl. Kit TV Viewer exclusion / if_owner / sync removal, no-read users get no data, lists + added list + 180-day usage, shared-list notice, also-sold-by via invoice line / Item Default / Bin and 365-day window, filters, stock per warehouse, per-cell reader vs writer incl. lock reasons, reader save refused, save + log row + Version, unchanged not logged, savepoint isolation, failure after write rolled back, stale / newer dated / created meanwhile (also derived cell), concurrent commit refused, deadlock aborts the whole save, >30% (exact 30% not large, drops count, derived price), 100-change cap, new price created, bad rates, list not on page, duplicates, UOM factor, blank-unit record, log permissions, deleting an Item Price keeps the log)"
+  },
+  {
+   "test": "deploy/lab/mutate.py: 43 hand mutants of api.py / setup.py / quick_price_change.py, each against the whole module",
+   "result": "43/43 killed (evidence/final2/mutants.log); earlier rounds found 10 survivors, tests strengthened"
+  },
+  {
+   "test": "every existing fours test module, plain unittest with the lab bench python, base 7da0d29 vs branch",
+   "result": "identical outcome per module (counts and failures/errors; the pre-existing environment errors are the same on both); test_quick_price_update needs a site"
+  },
+  {
+   "test": "headless Chromium (kasc-bom-tills) as fqp.writer (Vox Accountant, Company UP Vox Lounge + Vox Lounge Nansana), fqp.reader (4S Accountant, UP 4S), fqp.tv (Kit TV Viewer only)",
+   "result": "writer: list button, desk search 'Open Quick Price Update', 2 companies, 100 rows, 98 editable / 2 locked (lab data has duplicate prices), shared notice, 63 also-sold-by hints, added list column + removal, save dialog -> Item Price changed, Quick Price Change row + Version, Pricing workspace shortcut; reader: button + search, 100 rows all locked, direct save_prices refused (PermissionError); tv: no button, not in search, page 'Not permitted', API 403. Every request to another host aborted (0). Found and fixed: the Save button lost its click handler when the edited cell's change event fired on the same click"
+  },
+  {
+   "test": "deploy/lab/race_probe.py: two real DB connections",
+   "result": "release refuses a price committed by another user after the request's snapshot (PriceChangedError); with assert_fresh disabled a duplicate row is created (the bug the independent review found)"
+  },
+  {
+   "test": "deploy kit rehearsal on the private bench (rehearse.sh reset / forward / rollback / reforward; lab copy via mklab.sh)",
+   "result": "all phases PASS; migrate re-added 2 Vox Accountant rows (Sales Invoice read, Voided Bill) every time and the kit removed them (lab baseline 10 -> 12 -> 10); other roles' Custom DocPerm 0 different; site_config / kit_pos switches unchanged; other lab sites (demo, ddamu stand-ins) unchanged; rollback: code back, page/DocType/workspace removed by migrate, web check 417; re-forward with a new stamp PASS. Timings: precheck 6 s, backup 3 s, code 5 s, build 3 s, migrate 22 s, reload 9 s, verify 2 s, postcheck 1 s, rollback 34 s"
+  },
+  {
+   "test": "deploy/lab/negative.sh",
+   "result": "the kit stops (exit 2) on: a local change in apps/fours_customizations; a Vox Accountant count other than expected; FQP_SHA not in the bundle; a baseline Vox row missing after migrate (reported, not invented); a clean precheck passes afterwards"
+  },
+  {
+   "test": "deploy/lab/perf.py (lab data)",
+   "result": "get_items, 100 items: 56-83 ms, 114-167 queries (cold cache included)"
+  },
+  {
+   "test": "ruff 0.17.1 (wheel from PyPI) check + format on all new/changed Python",
+   "result": "clean"
+  },
+  {
+   "test": "independent read-only code review (subagent)",
+   "result": "no SQLi/XSS/permission bypass on writes; 4 issues fixed (REPEATABLE READ duplicate race, deadlock -> 500, Item/Brand User Permissions on reads, unit-less records), window self-call fixed; preload/HUP verified (frappe.app imports no app module)"
+  }
+ ],
+ "tests_not_run": [
+  {
+   "test": "anything on production or Multax",
+   "reason": "forbidden; the lead deploys with deploy/deploy_fqp.sh"
+  },
+  {
+   "test": "performance at production volumes (VXN ~21.6k invoices / 180 d)",
+   "reason": "the lab copy has 24 submitted SIs; list usage and company item sets are cached 10 min per site; the first page per company may take noticeably longer on production (not measured)"
+  },
+  {
+   "test": "nginx asset check of the kit in the lab",
+   "reason": "the private bench has no nginx vhost (HTTP 000 -> WARN 'not conclusive'); assets were served by frappe's own server in the browser check"
+  },
+  {
+   "test": "mv --exchange swap",
+   "reason": "the lab's coreutils has no --exchange: the kit's two-rename fallback ran; production had --exchange on 2026-10-21 (Jamissang precheck)"
+  }
+ ],
+ "risks": [
+  "The page shows item names, stock quantities per warehouse and prices to every user with full Item Price read, also without Item / Bin read (items are read with plain queries as specified, like the Jamissang page). 4S Accountants and Vox Accountants do not have Bin read on the lab copy.",
+  "'Used by' / 'also sold by' name other companies (and that they sell/stock an item) to users restricted to one company - the requested shared-list warning; the owner should accept it.",
+  "Kit TV Viewer can read Quick Price Change rows (it has Item Price read) but has no page.",
+  "sync_access rewrites the page's Custom Role (and Pricing workspace/icon roles) on every migrate: a hand edit of the page roles does not survive; page roles are meant to follow Item Price read.",
+  "Vox fix trusts the baseline taken in 'backup' (right before 'code'): a Vox Accountant permission changed by someone between backup and migrate would be reverted (the kit lists every row it removes/restores).",
+  "A migrate of multax also runs every app's pending syncs/after_migrate: precheck stops when anything other than fours is pending; other roles' permission changes stop the kit (FQP_ACK_PERMS).",
+  "Rollback keeps tabQuick Price Change and its rows; prices changed through the page keep their new values (Versions hold the old ones).",
+  "Production data may hold duplicate generic prices (the lab copy has some, e.g. VX-0102 in Standard Selling): those cells are locked until cleaned up.",
+  "Concurrent saves of the same item serialize on row locks (Item + its Item Price rows) until the request ends; a deadlock with another kind of transaction aborts the whole save (reported to the user, nothing half-saved)."
+ ],
+ "open_questions": [
+  "Who gets Item Price write/create (and for which lists)? Today no 4S user can update prices; Standard Selling is shared by Vox Lounge, 4S and Vox Lounge Nansana.",
+  "Should stock columns require stock (Bin) read, or stay visible to every price reader as now?",
+  "Should a reason be required for price decreases (Jamissang did; here it is optional as specified)?",
+  "Should the Kit TV Viewer role read the Quick Price Change log (literal rule 'everyone with Item Price read' says yes)?",
+  "fours_customizations on any site other than multax? precheck will stop if so (FQP_ACK_OTHER_FOURS)."
+ ],
+ "deploy": {
+  "kit": "deploy/deploy_fqp.sh + deploy/fqp_check.py + deploy/RUNBOOK.md; bundle: deploy/make_bundle.sh /opt/build/fours-qp-wt <sha> <out.bundle>",
+  "window": "FQP_SHA=<sha> FQP_BUNDLE=<bundle> ./deploy_fqp.sh precheck | backup | window (code, build, migrate, reload) | verify | postcheck; rollback",
+  "rules_encoded": [
+   "bench --site multax.kit.africa migrate only (never without --site, never ddamu)",
+   "sites with fours_customizations read from every site's DB; other fours sites stop the kit",
+   "backup multax --with-files + app tree tarball",
+   "one-rename code swap with rollback",
+   "bench build --app fours_customizations only, other apps' assets compared",
+   "Vox Accountant Custom DocPerm rows must equal the 48-row baseline (re-added rows removed)",
+   "other roles' Custom DocPerm, site_config and kit_pos switches unchanged",
+   "gunicorn HUP + workers restart (no bench restart)",
+   "every other site incl. jamissang.kit.africa fingerprinted before/after, ddamu stays in maintenance"
+  ]
+ },
+ "lab": {
+  "where": "kasc-bom-lab (ent-bom lab, found STOPPED; started for this job), private bench /home/frappe/fqp-bench (own venv: our frappe clone + fours_customizations first, other apps symlinked read-only; own redis :16222, gunicorn :18222 --preload, worker; sites fqpm.lab = labvox clone (multax stand-in, production's Item Price rules + 3 lab users), fqpd.lab = labdemo clone, fqpdd.lab = labddamu clone in maintenance). The shared lab bench and its sites were not changed. Browser: kasc-bom-tills (Playwright/Chromium), found STOPPED.",
+  "left_behind": "the private bench and its 3 _fqp* databases (for review reproduction; remove with deploy/lab/teardown.sh as root in the container); both containers stopped again at the end; starting kasc-bom-lab also started the shared lab bench's own units (as on any boot of that container), so its scheduler and workers ran for about 2 hours on the existing lab sites (labvox and the other packages' sites); nothing of this job ran on them",
+  "evidence": "/opt/build/fours-qp-wt/deploy/lab/evidence/ (gitignored): final2/ (reset, negative, forward, rollback, reforward logs, tests.log, mutants.log, race-probe.log, ui.jsonl, shots/), regression-modules.txt, earlier rounds",
+  "recipes": {
+   "setup": "bash deploy/lab/setup.sh <upstream.bundle> (root in kasc-bom-lab)",
+   "iterate": "deploy/lab/push-tree.sh (kit-build) then su - frappe -c 'cd /home/frappe/fqp-bench && bench --site fqpm.lab migrate && bench --site fqpm.lab run-tests --module fours_customizations.tests.test_quick_price_update'",
+   "rehearsal": "make_bundle.sh + release.env into /root/fqp/kit, then lab/rehearse.sh /root/fqp/kit reset|forward|rollback|reforward and lab/negative.sh /root/fqp/kit <lab vox count>",
+   "browser": "lab/serve.sh start (werkzeug on :18223, CI=1), lab-users.json to kasc-bom-tills /root/fqp (600), node ui_check.mjs pw.json shots"
+  }
+ }
+}
