@@ -24,8 +24,8 @@
 #              page lists per company, Error Log; manual list
 #   postcheck  read-only: every other site (jamissang, ddamu, demo ...) not migrated and not changed
 #   window     code + build + migrate + reload, one after the other (stops at the first failed gate)
-#   rollback   previous tree back, migrate multax, Vox fix, the release's Company field removed (only while empty: run
-#              'ps2.py rollback' first), build, reload
+#   rollback   refuses while ps2.py is applied (Company default lists set or the archives disabled: run 'ps2.py rollback'
+#              first); previous tree back, migrate multax, Vox fix, the release's Company field removed, build, reload
 #   status     read-only summary
 #
 # Never on this bench: bench restart, bench update, 'bench migrate' without --site, '--site all', migrate of any other site
@@ -40,6 +40,8 @@
 #   FQP_ACK_OTHER_FOURS=s1,s2     accept that these other sites have fours_customizations (they get the code, never a migrate)
 #   FQP_ACK_PERMS=1               accept other roles' permission changes made by migrate (after reading the list)
 #   FQP_NEW_TS=1                  precheck: start a new deploy stamp
+#   FQP_ACK_KEEP_PS2_DATA=1       rollback: go back to fe153b5 although ps2.py is applied (amendments and mapped documents
+#                                 of pre-split documents then break until 'ps2.py rollback', which also runs on fe153b5)
 set -uo pipefail
 umask 077
 
@@ -108,7 +110,7 @@ log_start() {
 	LOG=$LOGDIR/$TS-$PHASE-$(date -u +%H%M%SZ).log
 	exec > >(tee -a "$LOG") 2>&1
 	echo "## deploy_fqp.sh $PHASE | deploy $TS | site $SITE | release ${FQP_SHA:-<FQP_SHA unset>} | $(date -u +%FT%TZ) | log $LOG"
-	local v; for v in FQP_SHA FQP_BUNDLE FQP_REF FQP_ACK_SYNC FQP_ACK_OTHER_FOURS FQP_ACK_PERMS FQP_NEW_TS; do
+	local v; for v in FQP_SHA FQP_BUNDLE FQP_REF FQP_ACK_SYNC FQP_ACK_OTHER_FOURS FQP_ACK_PERMS FQP_NEW_TS FQP_ACK_KEEP_PS2_DATA; do
 		[ -n "${!v:-}" ] && echo "   lead decision: $v=${!v}"
 	done
 	return 0
@@ -474,6 +476,11 @@ rollback)
 	echo "  swap of $TSL; HEAD now $H; pre-release HEAD $SAVED; apps/.$APP-prev-$TSL $(asf "test -d apps/.$APP-prev-$TSL && echo present || echo MISSING")"
 	[ -n "$SAVED" ] || stop "no $DL/app-HEAD.txt (backup of that swap)"
 	asf "test -s $DL/facts-before.json" || stop "no $DL/facts-before.json (the Vox Accountant baseline)"
+	say "the Phase 2 data step must be rolled back first (read-only)"
+	if ! chk ps2-state --site $SITE; then
+		[ "${FQP_ACK_KEEP_PS2_DATA:-}" = 1 ] || stop "ps2.py is applied: run it with PS_MODE=rollback (same PS_TS) first, then this rollback (FQP_ACK_KEEP_PS2_DATA=1 overrides: a lead decision)"
+		echo "  FQP_ACK_KEEP_PS2_DATA=1: going back with the ps2 data in place (lead decision); then run ps2.py rollback and rollback-cleanup --apply"
+	fi
 	if [ "$H" != "$SAVED" ]; then
 		say "swap back (the failed release is kept for analysis)"
 		asf "test -e apps/.$APP-failed-$TSL" && stop "apps/.$APP-failed-$TSL exists already: move it away first"

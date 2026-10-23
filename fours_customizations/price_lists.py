@@ -9,8 +9,8 @@ With the split active:
   doctypes, Item Price or Price List) covers only rows of ENABLED lists whose company is one of theirs, or rows of
   blank-company lists (Standard Buying, ...) whose item belongs to one of their companies' item families. Administrator,
   users without such a row and Kit POS device sessions keep full access.
-- Price List: only Administrator or an unrestricted System Manager may rename a list or change enabled, selling,
-  buying, currency, price_not_uom_dependent or custom_company; a new selling list needs a company; a list stays enabled
+- Price List: only Administrator or an unrestricted System Manager may rename a list or change its title, enabled,
+  selling, buying, currency, price_not_uom_dependent or custom_company; a new selling list needs a company; a list stays enabled
   while an active Kit POS Location or an enabled POS Profile uses it.
 - Kit POS Location / POS Profile use an enabled list of their own company (or a blank-company list).
 - Item Price in a company list: the item must be of that company's family (allowlist; site_config
@@ -20,9 +20,11 @@ With the split active:
 - New selling documents and fours' document copies leave a DISABLED selling list for the company's default list
   (Company.custom_default_selling_price_list) without re-pricing their lines; new Items' Item Defaults get that list.
 - ERPNext's automatic price writes (the auto-insert of a missing price while a document is priced, a new Item's
-  Standard Selling Rate) are SKIPPED, not failed, when their list is disabled or the item is outside the list's family:
-  documents mapped from pre-split documents (priced on the server before any hook of the new document runs) and sales of
-  an item of another family still save. patch_erpnext() installs that guard (on import, before_request, before_job).
+  Standard Selling Rate) are SKIPPED, not failed, when their list is disabled, the item is outside the list's family,
+  or the session user (ERPNext writes as that user) may not use that row: documents mapped from pre-split documents
+  (priced on the server before any hook of the new document runs), sales of an item of another family and a restricted
+  writer's purchase of an item outside their families still save. patch_erpnext() installs that guard (on import,
+  before_request, before_job) only while ERPNext's functions have the signatures it wraps.
 
 Lists, companies and item families are read once per request (frappe.local) and per user, so saleslive's per-user
 read checks of one Item Price stay cheap.
@@ -44,7 +46,7 @@ FAMILIES = {
 }
 # Company User Permissions that restrict prices: rows for all doctypes, Item Price or Price List.
 APPLICABLE_FOR = ("", "Item Price", "Price List")
-GUARDED_FIELDS = ("enabled", "selling", "buying", "currency", "price_not_uom_dependent", FIELD)
+GUARDED_FIELDS = ("price_list_name", "enabled", "selling", "buying", "currency", "price_not_uom_dependent", FIELD)
 CHECK_FIELDS = ("enabled", "selling", "buying", "price_not_uom_dependent")
 READ_PTYPES = ("read", "select", "print", "email", "export", "report", "share")
 SELLING_DOCTYPES = ("Quotation", "Sales Order", "Delivery Note", "Sales Invoice", "POS Invoice")
@@ -444,10 +446,12 @@ def fill_item_default_price_lists(doc, method=None):
 # -- ERPNext's automatic price writes -------------------------------------------------------------------------------------
 
 
-def automatic_price_refused(price_list, item_code):
-	"""An automatic price write into `price_list` is skipped (split active): the list is disabled, or it belongs to a
-	company and the item is outside that company's family (guard on). The wrappers live in the process, which also
-	serves the bench's other sites: only a site with this app is judged."""
+def automatic_price_refused(price_list, item_code, user=None):
+	"""An automatic price write into `price_list` is skipped (split active): the list is disabled; it belongs to a
+	company and the item is outside that company's family (guard on); or the user who writes it (ERPNext inserts as the
+	session user, after a doctype-level check only) may not use that row, which would fail the whole document with a
+	PermissionError. The wrappers live in the process, which also serves the bench's other sites: only a site with this
+	app is judged."""
 	if not price_list or "fours_customizations" not in frappe.get_installed_apps() or not split_active():
 		return False
 	info = list_info(price_list)
@@ -455,33 +459,78 @@ def automatic_price_refused(price_list, item_code):
 		return False
 	if not info.enabled:
 		return True
-	return bool(
-		info.company and cint(frappe.conf.get(GUARD_CONFIG, 1)) and not family_allows(item_code, info.company)
-	)
+	if info.company and cint(frappe.conf.get(GUARD_CONFIG, 1)) and not family_allows(item_code, info.company):
+		return True
+	user = user or frappe.session.user
+	if not row_visible(user, price_list, item_code):
+		noted = _memo().setdefault("skipped", set())
+		if (user, price_list, item_code) not in noted:
+			noted.add((user, price_list, item_code))
+			frappe.logger("fours_price_lists").info(
+				f"automatic price of {item_code} in {price_list} skipped: not a row of the user's companies"
+			)
+		return True
+	return False
+
+
+# The wrapped functions as ERPNext (v16, multax) defines them: insert_item_price(ctx), Item.add_price(self, price_list=None).
+EXPECTED_SIGNATURES = {"insert_item_price": ("ctx",), "Item.add_price": ("self", "price_list")}
+_signature_warned = []
+
+
+def signatures_match(insert_item_price, add_price):
+	"""ERPNext's functions still take the parameters the wrappers pass on (an upgrade may change them)."""
+	import inspect
+
+	try:
+		got = {
+			"insert_item_price": tuple(inspect.signature(insert_item_price).parameters),
+			"Item.add_price": tuple(inspect.signature(add_price).parameters),
+		}
+	except (TypeError, ValueError):
+		return False
+	return got == EXPECTED_SIGNATURES
 
 
 def patch_erpnext(*args, **kwargs):
 	"""Wrap erpnext.stock.get_item_details.insert_item_price (called by name while a document's lines are priced) and
-	Item.add_price (a new Item's Standard Selling Rate) with automatic_price_refused. Idempotent, per process."""
+	Item.add_price (a new Item's Standard Selling Rate) with automatic_price_refused. Idempotent, per process. When
+	ERPNext's signatures differ from EXPECTED_SIGNATURES, nothing is wrapped and one warning is logged per process."""
 	from erpnext.stock import get_item_details
 	from erpnext.stock.doctype.item.item import Item
 
-	if not getattr(get_item_details.insert_item_price, "fours_price_lists", False):
+	insert_done = getattr(get_item_details.insert_item_price, "fours_price_lists", False)
+	add_done = getattr(Item.add_price, "fours_price_lists", False)
+	if insert_done and add_done:
+		return
+	if not signatures_match(
+		getattr(get_item_details.insert_item_price, "__wrapped__", get_item_details.insert_item_price),
+		getattr(Item.add_price, "__wrapped__", Item.add_price),
+	):
+		if not _signature_warned:
+			_signature_warned.append(True)
+			frappe.logger("fours_price_lists").warning(
+				"ERPNext insert_item_price / Item.add_price signatures changed: automatic price writes are NOT guarded "
+				"by the price list split (fours_customizations.price_lists.patch_erpnext)"
+			)
+		return
+
+	if not insert_done:
 		original_insert = get_item_details.insert_item_price
 
-		def insert_item_price(ctx, *a, **kw):
+		def insert_item_price(ctx):
 			if automatic_price_refused(ctx.get("price_list"), ctx.get("item_code")):
 				return
-			return original_insert(ctx, *a, **kw)
+			return original_insert(ctx)
 
 		insert_item_price.fours_price_lists = True
 		insert_item_price.__wrapped__ = original_insert
 		get_item_details.insert_item_price = insert_item_price
 
-	if not getattr(Item.add_price, "fours_price_lists", False):
+	if not add_done:
 		original_add = Item.add_price
 
-		def add_price(self, price_list=None, *a, **kw):
+		def add_price(self, price_list=None):
 			target = price_list or (
 				"fours_customizations" in frappe.get_installed_apps()
 				and (
@@ -491,7 +540,7 @@ def patch_erpnext(*args, **kwargs):
 			)
 			if automatic_price_refused(target, self.name):
 				return
-			return original_add(self, price_list, *a, **kw)
+			return original_add(self, price_list)
 
 		add_price.fours_price_lists = True
 		add_price.__wrapped__ = original_add

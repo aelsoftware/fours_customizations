@@ -3,7 +3,7 @@
 # kasc-bom-lab). Every phase is the
 # production script (lab copy from mklab.sh: bench path, private dirs, site names, Vox count); lab/supervisorctl stands in for
 # supervisor. Timings go to <kit>/lab-results/timings.tsv.
-# usage: rehearse.sh <kit dir> reset | forward | rollback | reforward
+# usage: rehearse.sh <kit dir> reset | forward | rollback | wrongorder | reforward
 #   reset    multax stand-in fqpm.lab cloned again from labvox and migrated at production's fe153b5, production's Item Price
 #            rules + lab users (seed_ui.py), the owner's removals simulated (the Vox Accountant rows on Sales Invoice and
 #            Voided Bill are deleted: fours' own after_migrate re-adds both on every migrate, the rows the kit must remove),
@@ -11,6 +11,8 @@
 #   forward  precheck, backup, code, build, migrate, reload, verify, postcheck (FQP_SHA / FQP_BUNDLE from <kit>/release.env),
 #            then ps2.py plan, apply, verify
 #   rollback ps2.py rollback, the kit's rollback, then the read-only checks again
+#   wrongorder after forward: the kit rollback must stop while ps2 is applied; forced (FQP_ACK_KEEP_PS2_DATA=1), ps2 rollback
+#            on fe153b5 + rollback-cleanup recover
 #   reforward a new deploy stamp after the rollback: the whole forward again
 set -uo pipefail
 K=$1; STEP=$2
@@ -94,6 +96,20 @@ case $STEP in
     echo "Vox Accountant rows after rollback: $(vox)"
     ph "postcheck after rollback" "$DEP" postcheck
     ;;
+  wrongorder)  # after forward (ps2 applied): the code rollback first must stop before the swap; forced, ps2 rollback recovers
+    H0=$(runuser -u frappe -- $G -C $L/apps/$APP rev-parse HEAD)
+    ph "kit rollback refused while ps2 is applied" bash -c "! '$DEP' rollback > $R/wrongorder.out 2>&1; s=\$?; cat $R/wrongorder.out | tail -6; grep -q 'ps2.py is applied' $R/wrongorder.out && exit \$s"
+    ph "HEAD unchanged, scheduler not paused" bash -c "[ \"\$(runuser -u frappe -- $G -C $L/apps/$APP rev-parse HEAD)\" = $H0 ] && ! grep -q 'scheduler pause' $R/wrongorder.out"
+    ph "forced kit rollback (FQP_ACK_KEEP_PS2_DATA=1)" env FQP_ACK_KEEP_PS2_DATA=1 "$DEP" rollback
+    ph "HEAD = baseline" bash -c "[ \"\$(runuser -u frappe -- $G -C $L/apps/$APP rev-parse HEAD)\" = $BASE ]"
+    ph "ps2 rollback on fe153b5" ps2 rollback
+    ph "ps2 plan on fe153b5 (gates: release not live)?" ps2 plan
+    ph "rollback-cleanup --apply" su - frappe -c "cd $L/sites && ../env/bin/python /home/frappe/ps-release-lab/kit/fqp_check.py rollback-cleanup --site fqpm.lab --apply"
+    ph "ps2-state clean" su - frappe -c "cd $L/sites && ../env/bin/python /home/frappe/ps-release-lab/kit/fqp_check.py ps2-state --site fqpm.lab"
+    ph "release objects gone" su - frappe -c "cd $L/sites && ../env/bin/python /home/frappe/ps-release-lab/kit/fqp_check.py smoke --site fqpm.lab --pre"
+    echo "Vox Accountant rows after the wrong-order rollback: $(vox)"
+    ph "postcheck after rollback" "$DEP" postcheck
+    ;;
   reforward)
     export FQP_NEW_TS=1
     ph "precheck (new stamp)" "$DEP" precheck
@@ -109,5 +125,5 @@ case $STEP in
     ;;
   phases)  # rehearse.sh <kit> phases <phase>...: continue after a fixed stop
     shift 2; for p in "$@"; do ph "$p" "$DEP" "$p"; done ;;
-  *) echo "usage: rehearse.sh <kit dir> reset|forward|rollback|reforward|phases <phase>..." >&2; exit 2 ;;
+  *) echo "usage: rehearse.sh <kit dir> reset|forward|rollback|wrongorder|reforward|phases <phase>..." >&2; exit 2 ;;
 esac

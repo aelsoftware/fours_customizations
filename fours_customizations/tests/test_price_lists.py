@@ -27,7 +27,7 @@ L_OLD, L_BUY, L_USD = f"{P} Old Selling", f"{P} Shared Buying", f"{P} 4S Dollar"
 WRITER_ROLE, READER_ROLE = f"{P} Price Writer", f"{P} Price Reader"
 U = {
 	key: f"pst.{key}@pst.invalid"
-	for key in ("s4", "vxm", "vxn", "vxm_item_rows", "free", "ml", "reader4s", "sm_vxm", "sm")
+	for key in ("s4", "vxm", "vxn", "vxm_item_rows", "free", "ml", "reader4s", "sm_vxm", "sm", "ip_vxm")
 }
 I_4S, I_VOX, I_RAW, I_OTHER = (f"{P}-ITEM-{n}" for n in ("4S", "VOX", "RAW", "OTHER"))
 CUSTOMER = f"{P} Customer"
@@ -53,7 +53,7 @@ def make_role(name):
 		frappe.get_doc({"doctype": "Role", "role_name": name, "desk_access": 1}).insert(ignore_permissions=True)
 
 
-def make_user(email, roles, companies=(), item_only=()):
+def make_user(email, roles, companies=(), item_only=(), price_only=()):
 	if frappe.db.exists("User", email):
 		frappe.delete_doc("User", email, ignore_permissions=True, force=True)
 	frappe.get_doc(
@@ -69,6 +69,8 @@ def make_user(email, roles, companies=(), item_only=()):
 		user_permission(email, company)
 	for company in item_only:
 		user_permission(email, company, applicable_for="Item")
+	for company in price_only:  # a Company row scoped to Item Price: Frappe's own link checks ignore it elsewhere
+		user_permission(email, company, applicable_for="Item Price")
 
 
 def user_permission(user, company, applicable_for=None):
@@ -207,6 +209,7 @@ class TestPriceLists(IntegrationTestCase):
 		make_user(U["reader4s"], [READER_ROLE], [CO_4S])
 		make_user(U["sm_vxm"], ["System Manager", WRITER_ROLE], [CO_VXM])
 		make_user(U["sm"], ["System Manager", WRITER_ROLE])
+		make_user(U["ip_vxm"], [WRITER_ROLE], price_only=[CO_VXM])
 		set_companies(cls.COMPANIES)
 		for company, price_list in ((CO_4S, L_4S), (CO_VXM, L_VXM), (CO_VXN, L_VXN)):
 			frappe.db.set_value("Company", company, price_lists.DEFAULT_FIELD, price_list, update_modified=False)
@@ -260,6 +263,7 @@ class TestPriceLists(IntegrationTestCase):
 			"sm_vxm": {(I_VOX, L_VXM), (I_VOX, L_BUY), (I_RAW, L_BUY), (I_VOX, L_OLD)},
 		}
 		everything = set(self.prices)
+		own["ip_vxm"] = own["vxm"]  # a Company row scoped to Item Price restricts prices the same way
 		own["free"] = own["sm"] = everything
 		for key, expected in own.items():
 			with self.subTest(user=key):
@@ -380,6 +384,14 @@ class TestPriceLists(IntegrationTestCase):
 			self.assertRaises(
 				frappe.PermissionError, frappe.rename_doc, "Price List", L_OLD, f"{P} Renamed", force=True
 			)
+		# the title of a list (shown to every company) is guarded too
+		as_user(U["vxm"])
+		doc = frappe.get_doc("Price List", L_BUY)
+		doc.price_list_name = f"{P} Vox Buying"
+		self.assertRaisesRegex(frappe.PermissionError, "Price List Name", doc.save)
+		self.assertRaises(
+			frappe.PermissionError, frappe.client.set_value, "Price List", L_BUY, "price_list_name", f"{P} Vox Buying"
+		)
 		# a value sent as true/false instead of 1/0 is no change
 		as_user(U["vxm"])
 		doc = frappe.get_doc("Price List", L_VXM)
@@ -401,6 +413,22 @@ class TestPriceLists(IntegrationTestCase):
 		self.assertRaises(frappe.ValidationError, new.insert)
 		new.set(price_lists.FIELD, CO_VXN)
 		new.insert()
+		# a restricted user creates lists only for their companies; with a Company row scoped to Item Price, Frappe's
+		# link check does not apply to Price List: the release's check is the only guard
+		as_user(U["ip_vxm"])
+		other = frappe.get_doc(
+			{"doctype": "Price List", "price_list_name": f"{P} Other", "selling": 1, "currency": "UGX", "enabled": 1}
+		)
+		other.set(price_lists.FIELD, CO_4S)
+		self.assertRaisesRegex(frappe.PermissionError, "may not create a price list for", other.insert)
+		other.set(price_lists.FIELD, CO_VXM)
+		other.insert()
+		self.assertEqual(frappe.db.get_value("Price List", other.name, price_lists.FIELD), CO_VXM)
+		# the class's other tests know only the class's lists
+		as_user("Administrator")
+		for name in (new.name, other.name):
+			frappe.delete_doc("Price List", name, force=True)
+		price_lists.clear_caches()
 
 	def test_list_in_use_cannot_be_disabled(self):
 		profile = frappe.get_all("POS Profile", filters={"disabled": 0}, fields=["name", "selling_price_list"], limit=1)[0]
@@ -663,34 +691,35 @@ class TestPriceLists(IntegrationTestCase):
 		self.assertFalse(item.item_defaults[-1].default_price_list)
 
 	def test_kit_pos_quick_add_writes_only_the_branch_list(self):
-		"""kit_pos catalog.create_product inserts the Item with one Item Default (company + warehouse, no list) and then
-		prices the location's list plus each Item Default's list (else the Selling Settings list): with the fill, only
-		the branch list. The Item is inserted as catalog.create_product does; the list set is its rule."""
+		"""kit_pos catalog.create_product (the real endpoint; only the request, the till's access and its location are
+		stubbed) prices the location's list plus each Item Default's list (else the Selling Settings list): with the
+		release's Item Default fill, only the branch list."""
 		catalog = frappe.get_module("kit_pos.connector.catalog")
-		location = frappe._dict(company=CO_VXM, selling_price_list=L_VXM, warehouse=None)
 		as_user("Administrator")
-		item = frappe.get_doc(
-			{
-				"doctype": "Item",
-				"item_code": f"{P}-QA-2",
-				"item_name": f"{P}-QA-2",
-				"item_group": leaf_group("Vox Items"),
-				"stock_uom": "Nos",
-				"is_sales_item": 1,
-				"is_stock_item": 0,
-				"standard_rate": 0,
-				"item_defaults": [{"company": location.company, "default_warehouse": location.warehouse}],
-			}
-		)
-		item.flags.ignore_permissions = True
-		item.insert(ignore_permissions=True)
-		# the lists catalog.create_product writes (location list + each Item Default list, else Selling Settings')
-		price_lists_written = {location.selling_price_list} | {
-			d.default_price_list or frappe.db.get_single_value("Selling Settings", "selling_price_list")
-			for d in item.item_defaults
+		frappe.db.set_single_value("Selling Settings", "selling_price_list", L_OLD)  # without the fill: priced here too
+		warehouse = frappe.db.get_value("Warehouse", {"company": CO_VXM, "is_group": 0, "disabled": 0})
+		location = frappe._dict(name="PST-LOC", company=CO_VXM, selling_price_list=L_VXM, warehouse=warehouse)
+		code = f"{P}-QA-2-{frappe.generate_hash(length=4).upper()}"
+		body = {
+			"location_id": "PST-LOC",
+			"name": f"{code} name",
+			"sku": code,
+			"single_dsp": 4500,
+			"category": leaf_group("Vox Items"),
+			"unit_name": "Nos",
 		}
-		self.assertEqual(price_lists_written, {L_VXM})
-		self.assertTrue(hasattr(catalog, "create_product"))
+		access = SimpleNamespace(require=lambda *a, **k: None, require_location=lambda location_id: location_id)
+		with (
+			patch.object(catalog, "request_json", return_value=body),
+			patch.object(catalog.sale_permissions, "request_access", return_value=access),
+			patch.object(catalog, "_selected_location", return_value=location),
+		):
+			result = catalog.create_product()
+		self.assertTrue(result["id"])
+		rows = frappe.get_all("Item Price", filters={"item_code": code}, fields=["price_list", "price_list_rate"])
+		self.assertEqual({(r.price_list, flt(r.price_list_rate)) for r in rows}, {(L_VXM, 4500)})
+		item = frappe.get_doc("Item", code)
+		self.assertEqual([(d.company, d.default_price_list) for d in item.item_defaults], [(CO_VXM, L_VXM)])
 
 	def test_landed_cost_scope(self):
 		as_user("Administrator")
@@ -833,6 +862,131 @@ class TestPriceLists(IntegrationTestCase):
 		self.assertFalse(price_lists.automatic_price_refused(L_VXM, I_VOX))
 		with patch.dict(frappe.conf, {price_lists.GUARD_CONFIG: 0}):
 			self.assertFalse(price_lists.automatic_price_refused(L_VXM, I_4S))
+
+	def test_restricted_writer_purchase_skips_rows_they_may_not_use(self):
+		"""A company-restricted price writer saves a Purchase Invoice on a list of no company (Standard Buying) for items
+		without a price there: ERPNext's auto-insert (as the session user) of an item outside the user's families is
+		skipped instead of failing the invoice; an item of the user's family is still priced."""
+		as_user("Administrator")
+		frappe.db.set_single_value("Stock Settings", "auto_insert_price_list_rate_if_missing", 1)
+		frappe.db.set_single_value("Stock Settings", "update_existing_price_list_rate", 0)
+		supplier = frappe.get_doc(
+			{
+				"doctype": "Supplier",
+				"supplier_name": f"{P} Supplier {frappe.generate_hash(length=4)}",
+				"supplier_group": frappe.db.get_value("Supplier Group", {"is_group": 0}),
+				"custom_company": CO_VXM,
+			}
+		).insert(ignore_permissions=True)
+		no_family = f"{P}-ITEM-{frappe.generate_hash(length=6).upper()}"
+		make_item(no_family, leaf_group(outside=("4S Items", "Vox Items", "Raw Kitchen Items")))
+		item_4s, item_vox = fresh_item("4S Items"), fresh_item("Vox Items")
+		price_lists.clear_caches()
+		as_user(U["vxm"])
+		self.assertTrue(frappe.has_permission("Item Price", "write"))  # ERPNext's own (doctype-level) check passes
+		self.assertFalse(price_lists.row_visible(U["vxm"], L_BUY, no_family))
+		self.assertFalse(price_lists.row_visible(U["vxm"], L_BUY, item_4s))
+		invoice = frappe.get_doc(
+			{
+				"doctype": "Purchase Invoice",
+				"company": CO_VXM,
+				"supplier": supplier.name,
+				"buying_price_list": L_BUY,
+				"posting_date": nowdate(),
+				"bill_date": nowdate(),
+				"items": [
+					{"item_code": code, "qty": 1, "rate": 777, "price_list_rate": 777}
+					for code in (no_family, item_4s, item_vox)
+				],
+			}
+		)
+		invoice.insert(ignore_permissions=True)  # the invoice's own rights are not the point: the Item Price insert's are
+		self.assertTrue(invoice.name)
+		as_user("Administrator")
+		self.assertFalse(frappe.db.exists("Item Price", {"item_code": no_family}))
+		self.assertFalse(frappe.db.exists("Item Price", {"item_code": item_4s}))
+		self.assertEqual(
+			flt(frappe.db.get_value("Item Price", {"item_code": item_vox, "price_list": L_BUY}, "price_list_rate")), 777
+		)
+		# unrestricted writers (Administrator, users without a Company row) still auto-insert, as on fe153b5
+		self.assertFalse(price_lists.automatic_price_refused(L_BUY, no_family, "Administrator"))
+		self.assertFalse(price_lists.automatic_price_refused(L_BUY, no_family, U["free"]))
+		self.assertTrue(price_lists.automatic_price_refused(L_BUY, no_family, U["vxm"]))
+
+	def test_patch_erpnext_checks_signatures(self):
+		from erpnext.stock import get_item_details
+		from erpnext.stock.doctype.item.item import Item
+
+		wrapped_insert, wrapped_add = get_item_details.insert_item_price, Item.add_price
+		original_insert, original_add = wrapped_insert.__wrapped__, wrapped_add.__wrapped__
+		self.assertTrue(price_lists.signatures_match(original_insert, original_add))  # this ERPNext = multax's
+
+		def changed(ctx, extra=None):
+			return original_insert(ctx)
+
+		try:
+			get_item_details.insert_item_price, Item.add_price = changed, original_add
+			with patch.object(price_lists, "_signature_warned", []), patch.object(frappe, "logger") as logger:
+				price_lists.patch_erpnext()
+				price_lists.patch_erpnext()
+			# a changed signature: ERPNext left unwrapped (both functions), one warning per process
+			self.assertIs(get_item_details.insert_item_price, changed)
+			self.assertIs(Item.add_price, original_add)
+			self.assertEqual(logger.return_value.warning.call_count, 1)
+			# the expected signatures: both wrapped, once (a second call is a no-op)
+			get_item_details.insert_item_price = original_insert
+			price_lists.patch_erpnext()
+			first = get_item_details.insert_item_price
+			price_lists.patch_erpnext()
+			self.assertIs(get_item_details.insert_item_price, first)
+			self.assertTrue(getattr(first, "fours_price_lists", False))
+			self.assertIs(first.__wrapped__, original_insert)
+			self.assertTrue(getattr(Item.add_price, "fours_price_lists", False))
+		finally:
+			get_item_details.insert_item_price, Item.add_price = wrapped_insert, wrapped_add
+
+	def test_quick_price_log_follows_the_company_rule(self):
+		from fours_customizations.fours_customizations.doctype.quick_price_change import quick_price_change
+
+		as_user("Administrator")
+		names = {}
+		for company, price_list, item in ((CO_4S, L_4S, I_4S), (CO_VXM, L_VXM, I_VOX), (CO_VXM, L_VXN, I_VOX)):
+			doc = frappe.get_doc(
+				{
+					"doctype": "Quick Price Change",
+					"company": company,
+					"item_code": item,
+					"price_list": price_list,
+					"uom": "Nos",
+					"action": "Changed",
+					"old_rate": 1000,
+					"new_rate": 1100,
+					"user": "Administrator",
+					"timestamp": frappe.utils.now_datetime(),
+				}
+			)
+			doc.flags.from_quick_price_update = True
+			doc.insert(ignore_permissions=True)
+			names[(company, price_list)] = doc.name
+		every = set(names.values())
+		for key, expected in (
+			("ip_vxm", {names[(CO_VXM, L_VXM)]}),  # a Company row scoped to Item Price: no Frappe link filter applies
+			("vxm", {names[(CO_VXM, L_VXM)]}),  # not the Makindye row on the Nansana list
+			("s4", {names[(CO_4S, L_4S)]}),
+			("free", every),
+		):
+			with self.subTest(user=key):
+				got = frappe.get_list("Quick Price Change", filters={"name": ["in", list(every)]}, user=U[key], pluck="name")
+				self.assertEqual(set(got), expected)
+				for name in every:
+					doc = frappe.get_doc("Quick Price Change", name)
+					self.assertEqual(bool(quick_price_change.has_permission(doc, "read", U[key])), name in expected)
+		# dark mode: no company rule
+		set_companies({name: None for name in self.COMPANIES})
+		try:
+			self.assertEqual(quick_price_change.query_conditions(U["ip_vxm"]), "")
+		finally:
+			set_companies(self.COMPANIES)
 
 	# -- dark mode ------------------------------------------------------------------------------------------------------
 

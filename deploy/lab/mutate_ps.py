@@ -10,6 +10,7 @@ PL = APP + "price_lists.py"
 API = APP + "quick_price/api.py"
 LCV = APP + "landed_cost_handler.py"
 HOOKS = APP + "hooks.py"
+QPC = APP + "fours_customizations/doctype/quick_price_change/quick_price_change.py"
 MUTANTS = [
 	("write: stored row not checked", PL, 'not in (*READ_PTYPES, "create") and doc.get("name"):', "not in (*READ_PTYPES, \"create\") and False:"),
 	("disabled lists visible", PL, "	if not info.enabled:\n		return False\n	if info.company:", "	if info.company:"),
@@ -43,8 +44,18 @@ MUTANTS = [
 	("page: hidden cells shown", API, "	return not price_lists.split_active() or price_lists.row_visible(", "	return True or price_lists.row_visible("),
 	("page: family lock dropped", API, "	return bool(info and info.company and not price_lists.family_allows(item_code, info.company))", "	return False"),
 	("page: any Company row", API, "		allowed = price_lists.allowed_companies(user)  # the desk's rule for prices", '		allowed = user_permission_values(user, "Company", applies_to=None)'),
-	("auto-insert into archives", PL, "	if not info.enabled:\n		return True\n	return bool(", "	if False:\n		return True\n	return bool("),
-	("auto-insert into other families", PL, "		info.company and cint(frappe.conf.get(GUARD_CONFIG, 1)) and not family_allows(item_code, info.company)\n	)", "		False\n	)"),
+	("auto-insert into archives", PL, "	if not info.enabled:\n		return True\n	if info.company and cint(", "	if False:\n		return True\n	if info.company and cint("),
+	("auto-insert into other families", PL, "	if info.company and cint(frappe.conf.get(GUARD_CONFIG, 1)) and not family_allows(item_code, info.company):\n		return True", "	if False:\n		return True"),
+	("auto-insert: restricted writer's hidden row inserted", PL, "	if not row_visible(user, price_list, item_code):\n		noted", "	if False:\n		noted"),
+	("auto-insert: judged for the session user, not the given one", PL, "	user = user or frappe.session.user\n	if not row_visible(", "	user = frappe.session.user\n	if not row_visible("),
+	("ERPNext: signature not checked", PL, "	if not signatures_match(", "	if False and not signatures_match("),
+	("ERPNext: signature warning every call", PL, "		if not _signature_warned:", "		if True:"),
+	("ERPNext: only one function checked", PL, '			"Item.add_price": tuple(inspect.signature(add_price).parameters),\n', ""),
+	("price list: title unguarded", PL, '("price_list_name", "enabled",', '("enabled",'),
+	("price list: restricted user creates another company's list", PL, "	if allowed is not None and doc.get(FIELD) and doc.get(FIELD) not in allowed:", "	if False:"),
+	("log: no company rule in the query", QPC, '	if scope is None:\n		return ""', '	if True:\n		return ""'),
+	("log: no company rule in has_permission", QPC, "	if scope is None:\n		return True", "	if True:\n		return True"),
+	("log: other companies' lists readable", QPC, "	return doc.get(\"company\") in allowed and doc.get(\"price_list\") not in foreign", "	return doc.get(\"company\") in allowed"),
 	("ERPNext not patched", PL, "\n\npatch_erpnext()\n", "\n"),
 	("party: shared selling list for customers", PL, '	shared_ok = doc.doctype in ("Supplier", "Supplier Group")', "	shared_ok = True"),
 	("party: disabled default allowed", PL, "	if info and not info.enabled:\n		frappe.throw(_(\"Price list {0} is disabled: it cannot be a default.", "	if False:\n		frappe.throw(_(\"Price list {0} is disabled: it cannot be a default."),

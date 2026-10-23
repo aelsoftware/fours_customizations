@@ -22,6 +22,8 @@ Commands
   smoke      --site S [--since T]            hooks loaded, Company default-list field, split rules hold per restricted
                                              user (SQL = Python rule), consumers, page lists (or field absent with --pre)
   rollback-cleanup --site S [--apply]        the release's Company custom field, removed only while every value is blank
+  ps2-state  --site S                        gate of the rollback: stops while ps2.py is applied (Company default lists
+                                             set, Standard Selling / Selling Price Vox Nansana disabled)
   page-roles --site S --baseline F [--apply] the Quick Price page's Custom Role roles back to those in F (facts)
   jobs       --site S                        background jobs running for the site (RQ started registries)
   assets     --out F;  assets-compare --before F --after F   other apps' built assets unchanged by the build
@@ -39,19 +41,37 @@ PAGE = "quick-price-update"
 LOG_DOCTYPE = "Quick Price Change"
 WORKSPACE = "Pricing"
 COMPANY_FIELD = "Company-custom_default_selling_price_list"  # the only record this release adds (after_migrate)
-HOOKED = (  # (hook, doctype, event or None, method)
-	("has_permission", "Item Price", None, "fours_customizations.price_lists.item_price_has_permission"),
-	("permission_query_conditions", "Item Price", None, "fours_customizations.price_lists.item_price_query_conditions"),
-	("doc_events", "Item Price", "validate", "fours_customizations.price_lists.validate_item_price"),
-	("doc_events", "Item", "validate", "fours_customizations.price_lists.fill_item_default_price_lists"),
-	("doc_events", "Price List", "validate", "fours_customizations.price_lists.validate_price_list"),
-	("doc_events", "Price List", "before_rename", "fours_customizations.price_lists.before_rename_price_list"),
-	("doc_events", "Kit POS Location", "validate", "fours_customizations.price_lists.validate_consumer_list"),
-	("doc_events", "POS Profile", "validate", "fours_customizations.price_lists.validate_consumer_list"),
-	("doc_events", "Customer", "validate", "fours_customizations.price_lists.validate_party_default_list"),
-	("doc_events", "Sales Invoice", "before_validate", "fours_customizations.price_lists.replace_disabled_selling_list"),
-	("doc_events", "POS Invoice", "before_validate", "fours_customizations.price_lists.replace_disabled_selling_list"),
+PL = "fours_customizations.price_lists."
+SELLING_JS = "public/js/selling_price_list.js"
+HOOKED = (  # (hook, doctype or None, event or None, method / file): every registration of the release in hooks.py
+	("has_permission", "Item Price", None, PL + "item_price_has_permission"),
+	("permission_query_conditions", "Item Price", None, PL + "item_price_query_conditions"),
+	("doc_events", "Item Price", "validate", PL + "validate_item_price"),
+	("doc_events", "Item", "validate", PL + "fill_item_default_price_lists"),
+	("doc_events", "Price List", "validate", PL + "validate_price_list"),
+	("doc_events", "Price List", "before_rename", PL + "before_rename_price_list"),
+	("doc_events", "Price List", "on_update", PL + "forget"),
+	("doc_events", "Price List", "after_rename", PL + "forget"),
+	("doc_events", "Price List", "on_trash", PL + "forget"),
+	("doc_events", "Company", "on_update", PL + "forget"),
+	("doc_events", "Kit POS Location", "validate", PL + "validate_consumer_list"),
+	("doc_events", "POS Profile", "validate", PL + "validate_consumer_list"),
+	*(
+		("doc_events", doctype, "validate", PL + "validate_party_default_list")
+		for doctype in ("Customer", "Customer Group", "Supplier", "Supplier Group")
+	),
+	*(
+		("doc_events", doctype, "before_validate", PL + "replace_disabled_selling_list")
+		for doctype in ("Quotation", "Sales Order", "Delivery Note", "Sales Invoice", "POS Invoice")
+	),
+	("before_request", None, None, PL + "patch_erpnext"),
+	("before_job", None, None, PL + "patch_erpnext"),
+	*(
+		("doctype_js", doctype, None, SELLING_JS)
+		for doctype in ("Quotation", "Sales Order", "Delivery Note", "Sales Invoice", "POS Invoice")
+	),
 )
+ARCHIVES = ("Standard Selling", "Selling Price Vox Nansana")  # disabled by ps2.py apply, enabled again by its rollback
 VOX = "Vox Accountant"
 RIGHTS = (
 	"read",
@@ -550,29 +570,31 @@ def cmd_switches_compare(a):
 # -- smoke -----------------------------------------------------------------------------------------------------------------
 
 
+def site_time(frappe, utc):
+	"""A UTC stamp of the kit (2026-10-23T12:00:00Z) as the site's local time, as Error Log.creation is stored."""
+	from datetime import datetime, timezone
+	from zoneinfo import ZoneInfo
+
+	from frappe.utils import get_system_timezone
+
+	moment = datetime.strptime(utc.rstrip("Z"), "%Y-%m-%dT%H:%M:%S").replace(tzinfo=timezone.utc)
+	return moment.astimezone(ZoneInfo(get_system_timezone())).replace(tzinfo=None)
+
+
 def cmd_smoke(a):
 	frappe = connect(a.site)
 	try:
-		from frappe.utils import get_datetime
-
 		rel = release_objects(frappe)
 		problems = []
 		if a.pre:
-			hooks = {n: frappe.get_hooks(n) or {} for n in ("has_permission", "permission_query_conditions", "doc_events")}
-			loaded = [
-				m
-				for hook, doctype, event, m in HOOKED
-				if m in str(hooks[hook].get(doctype, {}).get(event, []) if event else hooks[hook].get(doctype, []))
-			]
+			loaded = [m for hook, doctype, event, m in HOOKED if m in hook_values(frappe, hook, doctype, event)]
 			if loaded:
 				problems.append(f"price_lists hooks still loaded after rollback: {len(loaded)}")
 			out(f"  price_lists hooks loaded: {len(loaded)}; Custom Field {COMPANY_FIELD}: {rel['company_field']}")
 		else:
 			problems += _smoke_release(frappe, rel)
 			errors = (
-				frappe.get_all(
-					"Error Log", filters={"creation": [">=", get_datetime(a.since)]}, fields=["method", "error"]
-				)
+				frappe.get_all("Error Log", filters={"creation": [">=", site_time(frappe, a.since)]}, fields=["method", "error"])
 				if a.since
 				else []
 			)
@@ -593,6 +615,16 @@ def cmd_smoke(a):
 		close()
 
 
+def hook_values(frappe, hook, doctype, event):
+	"""The values registered for (hook, doctype, event) in the loaded hooks (a list)."""
+	got = frappe.get_hooks(hook) or ([] if doctype is None else {})
+	if doctype is not None:
+		got = got.get(doctype, {}) if isinstance(got, dict) else {}
+		if event:
+			got = got.get(event, []) if isinstance(got, dict) else []
+	return got if isinstance(got, list) else [got]
+
+
 def _user_hash(user):
 	return hashlib.sha1(user.encode()).hexdigest()[:8]
 
@@ -606,13 +638,20 @@ def _smoke_release(frappe, rel):
 	from fours_customizations.quick_price import api
 
 	problems = []
-	hooks = {name: frappe.get_hooks(name) or {} for name in ("has_permission", "permission_query_conditions", "doc_events")}
 	for hook, doctype, event, method in HOOKED:
-		got = hooks[hook].get(doctype, {})
-		got = got.get(event, []) if event else got
-		if method not in (got if isinstance(got, list) else [got]):
-			problems.append(f"hook {hook} {doctype} {event or ''} lacks {method}")
+		if method not in hook_values(frappe, hook, doctype, event):
+			problems.append(f"hook {hook} {doctype or ''} {event or ''} lacks {method}")
 	out(f"  hooks: {len(HOOKED) - len(problems)}/{len(HOOKED)} price_lists hooks loaded")
+	from erpnext.stock import get_item_details
+	from erpnext.stock.doctype.item.item import Item
+
+	price_lists.patch_erpnext()
+	wrapped = [
+		getattr(f, "fours_price_lists", False) for f in (get_item_details.insert_item_price, Item.add_price)
+	]
+	out(f"  ERPNext automatic price writes wrapped: {sum(wrapped)}/2")
+	if not all(wrapped):
+		problems.append("ERPNext insert_item_price / Item.add_price not wrapped (signature changed?)")
 	if not rel["company_field"]:
 		problems.append(f"Custom Field {COMPANY_FIELD} missing (after_migrate did not run?)")
 	elif not frappe.db.get_value("Custom Field", COMPANY_FIELD, "ignore_user_permissions"):
@@ -727,8 +766,9 @@ def cmd_rollback_cleanup(a):
 			for v in values:
 				out(f"    {v.name}: {v.custom_default_selling_price_list}")
 			out(
-				"  WARN: Company default lists are set (the data step ran): the field stays. Run 'ps2.py rollback', then"
-				" 'fqp_check.py rollback-cleanup --apply' to remove it (fe153b5 ignores the field)."
+				"  WARN: Company default lists are set (ps2.py was not rolled back before the code): the field stays."
+				" Run ps2.py with PS_MODE=rollback and the Phase 2 stamp (it runs on fe153b5 too), then"
+				" 'fqp_check.py rollback-cleanup --site <site> --apply' to remove the field (fe153b5 ignores it)."
 			)
 			return
 		if a.apply and exists:
@@ -736,6 +776,26 @@ def cmd_rollback_cleanup(a):
 			frappe.db.commit()
 			frappe.clear_cache(doctype="Company")
 			out(f"  removed Custom Field {COMPANY_FIELD}")
+	finally:
+		close()
+
+
+def cmd_ps2_state(a):
+	"""Read-only gate of the kit's rollback: the code may go back to fe153b5 only after 'ps2.py rollback' (fe153b5 has no
+	replace hooks: with the archives disabled, amendments / mapped documents of pre-split documents would break)."""
+	frappe = connect(a.site)
+	try:
+		problems = []
+		if frappe.db.has_column("Company", "custom_default_selling_price_list"):
+			n = frappe.db.count("Company", {"custom_default_selling_price_list": ["is", "set"]})
+			if n:
+				problems.append(f"{n} Company default selling list(s) set")
+		for name in ARCHIVES:
+			if frappe.db.get_value("Price List", name, "enabled") == 0:
+				problems.append(f"{name} disabled")
+		out(f"  ps2 data step: {'; '.join(problems) if problems else 'not applied (or rolled back)'}")
+		if problems:
+			raise GateFail("ps2.py is applied: run 'ps2.py' with PS_MODE=rollback (same PS_TS) first, then the kit's rollback")
 	finally:
 		close()
 
@@ -916,6 +976,8 @@ def main():
 	s = sub.add_parser("rollback-cleanup")
 	s.add_argument("--site", required=True)
 	s.add_argument("--apply", action="store_true")
+	s = sub.add_parser("ps2-state")
+	s.add_argument("--site", required=True)
 	s = sub.add_parser("page-roles")
 	s.add_argument("--site", required=True)
 	s.add_argument("--baseline", required=True)

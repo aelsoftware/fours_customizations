@@ -12,12 +12,14 @@ PS_TS    names the state directory /home/frappe/price-split/<PS_TS>/ (700; files
 apply (idempotent; each stage commits; a re-run skips what is done and stops on drift):
   1 gates   the release is live (price_lists hooks, Company default-list field); Phase 1 is in place (the three company
             lists exist, enabled, selling, UGX, of their company); no active Kit POS Location / enabled POS Profile, no
-            Selling Settings value, global default, Customer / Customer Group / Supplier default or Item Default row
-            uses Standard Selling (SS) or Selling Price Vox Nansana (SPVN) (user defaults and drafts: reported only)
+            Selling Settings value, global default, Customer / Customer Group / Supplier / Supplier Group default or Item
+            Default row uses Standard Selling (SS), Selling Price Vox Nansana (SPVN) or the empty 'Standard' list
+            (user defaults and drafts: reported only; for 'Standard' a user default also stops)
   2 defaults Company.custom_default_selling_price_list of the three companies -> their list
-  3 archive  SS and SPVN disabled through the release's guard (price_lists.check_not_in_use + the Price List rules),
-            written with db.set_value so ERPNext's Price List.on_update does not re-stamp the archive's Item Prices;
-            SS keeps a blank company, SPVN gets Vox Lounge Nansana
+  3 archive  SS, SPVN and 'Standard' disabled through the release's guard (price_lists.check_not_in_use + the Price List
+            rules), written with db.set_value so ERPNext's Price List.on_update does not re-stamp the archive's Item
+            Prices; SS and 'Standard' keep a blank company, SPVN gets Vox Lounge Nansana ('Standard' missing on a site:
+            nothing to do)
   4 page     the Quick Price page's Custom Role gets back its six roles (Phase 1 paused it to System Manager)
   5 caches   fours_quick_price redis keys, ERPNext's price_list_details of both archives, frappe cache of the site
 verify (read-only): the values above; per enabled price reader with a Company row, the Item Price list query equals the
@@ -25,6 +27,8 @@ verify (read-only): the values above; per enabled price reader with a Company ro
   Accountant Custom DocPerm rows = 48.
 rollback: back from ps2-before.json in reverse (page roles, archives' enabled/company, Company defaults), caches; safe after
   a partial apply (only recorded stages are undone; a value changed since apply stops the rollback of that value).
+  plan and rollback do not import the release's code: they also run after the code went back to fe153b5 (the kit's
+  rollback refuses to swap back while the data step is applied; this is the way out if it was forced).
 Prints names of lists, companies and roles, counts and 8-hex user hashes only.
 """
 
@@ -34,13 +38,16 @@ import os
 
 import frappe
 
-SS, SPVN = "Standard Selling", "Selling Price Vox Nansana"
+SS, SPVN, STANDARD = "Standard Selling", "Selling Price Vox Nansana", "Standard"
+FIELD = "custom_company"  # Price List -> Company (Phase 1's Custom Field) = price_lists.FIELD
+DEFAULT_FIELD = "custom_default_selling_price_list"  # Company -> Price List (the release's field) = price_lists.DEFAULT_FIELD
 LISTS = {  # Phase 1's company lists
 	"4S Industries Limited": "4S Selling Price",
 	"Vox Lounge": "Vox Makindye Selling Price",
 	"Vox Lounge Nansana": "Vox Nansana Selling Price",
 }
-ARCHIVES = {SS: None, SPVN: "Vox Lounge Nansana"}  # archive -> company it gets (None: stays blank)
+ARCHIVES = {SS: None, SPVN: "Vox Lounge Nansana", STANDARD: None}  # archive -> company it gets (None: stays blank)
+OPTIONAL = (STANDARD,)  # archived when the site has it (multax: empty, enabled, no company)
 PAGE = "quick-price-update"
 PAGE_ROLES = (
 	"Sales Master Manager",
@@ -115,15 +122,37 @@ def user_hash(user):
 # -- facts ------------------------------------------------------------------------------------------------------------------
 
 
-def facts():
-	from fours_customizations import price_lists
+def clear_caches():
+	"""price_lists.clear_caches() without importing the release (this request's memo + the Quick Price page's keys)."""
+	frappe.local.fours_price_lists = {}
+	frappe.cache.delete_keys("fours_quick_price:")
 
-	price_lists.clear_caches()
+
+def read_lists():
+	"""{name: {company, enabled, selling, currency}} of every Price List, read directly (= price_lists.lists())."""
+	fields = ["name", "enabled", "selling", "currency"] + ([FIELD] if frappe.get_meta("Price List").has_field(FIELD) else [])
+	cint = frappe.utils.cint
+	return {
+		r.name: frappe._dict(company=r.get(FIELD) or None, enabled=cint(r.enabled), selling=cint(r.selling), currency=r.currency)
+		for r in frappe.get_all("Price List", fields=fields)
+	}
+
+
+def archives(lists):
+	"""The archives this site has (an OPTIONAL one may be missing)."""
+	return [n for n in ARCHIVES if n in lists or n not in OPTIONAL]
+
+
+def facts():
+	clear_caches()
 	role = frappe.db.get_value("Custom Role", {"page": PAGE}, "name")
+	has_default = frappe.get_meta("Company").has_field(DEFAULT_FIELD)
 	return frappe._dict(
-		lists=price_lists.lists(),
+		lists=read_lists(),
 		defaults={
-			c: frappe.db.get_value("Company", c, price_lists.DEFAULT_FIELD) for c in LISTS if frappe.db.exists("Company", c)
+			c: frappe.db.get_value("Company", c, DEFAULT_FIELD) if has_default else None
+			for c in LISTS
+			if frappe.db.exists("Company", c)
 		},
 		page_role=role,
 		page_roles=sorted(frappe.get_all("Has Role", filters={"parenttype": "Custom Role", "parent": role}, pluck="role"))
@@ -134,18 +163,16 @@ def facts():
 
 def gates(ctx, strict=True):
 	"""The release and Phase 1 are in place; nothing active still sells with an archive. Returns the problems."""
-	from fours_customizations import price_lists
-
 	problems = []
 	hooks = frappe.get_hooks("has_permission") or {}
 	if "fours_customizations.price_lists.item_price_has_permission" not in hooks.get("Item Price", []):
 		problems.append("the ps-fours-2 release is not live (Item Price has_permission hook missing)")
-	if not frappe.get_meta("Company").has_field(price_lists.DEFAULT_FIELD):
-		problems.append(f"Company.{price_lists.DEFAULT_FIELD} missing (the release's migrate did not run)")
-	if not price_lists.has_company_field():
+	if not frappe.get_meta("Company").has_field(DEFAULT_FIELD):
+		problems.append(f"Company.{DEFAULT_FIELD} missing (the release's migrate did not run)")
+	if not frappe.get_meta("Price List").has_field(FIELD):
 		problems.append("Price List.custom_company missing: Phase 1 has not run")
 		return problems
-	lists = price_lists.lists()
+	lists = read_lists()
 	for company, name in LISTS.items():
 		info = lists.get(name)
 		if not info:
@@ -154,14 +181,18 @@ def gates(ctx, strict=True):
 			problems.append(f"{name}: company {info.company}, enabled {info.enabled}, selling {info.selling}, {info.currency}")
 	for name in ARCHIVES:
 		if name not in lists:
-			problems.append(f"{name} does not exist")
+			if name in OPTIONAL:
+				say(ctx, f"  {name}: not on this site, nothing to archive")
+			else:
+				problems.append(f"{name} does not exist")
+	names = archives(lists)
 	users = []
 	if frappe.db.table_exists("Kit POS Location"):
 		users += [
 			f"Kit POS Location {r.name} ({r.selling_price_list})"
 			for r in frappe.get_all(
 				"Kit POS Location",
-				filters={"active": 1, "selling_price_list": ["in", list(ARCHIVES)]},
+				filters={"active": 1, "selling_price_list": ["in", names]},
 				fields=["name", "selling_price_list"],
 			)
 		]
@@ -169,26 +200,40 @@ def gates(ctx, strict=True):
 		f"POS Profile {r.name} ({r.selling_price_list})"
 		for r in frappe.get_all(
 			"POS Profile",
-			filters={"disabled": 0, "selling_price_list": ["in", list(ARCHIVES)]},
+			filters={"disabled": 0, "selling_price_list": ["in", names]},
 			fields=["name", "selling_price_list"],
 		)
 	]
 	setting = frappe.db.get_single_value("Selling Settings", "selling_price_list")
-	if setting in ARCHIVES:
+	if setting in names:
 		users.append(f"Selling Settings.selling_price_list ({setting})")
-	if frappe.db.get_default("selling_price_list") in ARCHIVES:
+	if frappe.db.get_default("selling_price_list") in names:
 		users.append(f"global default selling_price_list ({frappe.db.get_default('selling_price_list')})")
 	# a party's default replaces a POS invoice's list after the release's before_validate; an Item Default list is
 	# where a new item's price and a till quick-add go: none may point at an archive
-	for doctype in ("Customer Group", "Customer", "Supplier"):
-		n = frappe.db.count(doctype, {"default_price_list": ["in", list(ARCHIVES)]})
+	for doctype in ("Customer Group", "Customer", "Supplier", "Supplier Group"):
+		n = frappe.db.count(doctype, {"default_price_list": ["in", names]})
 		if n:
 			users.append(f"{n} {doctype} default(s)")
-	n = frappe.db.count("Item Default", {"default_price_list": ["in", list(ARCHIVES)]})
+	n = frappe.db.count("Item Default", {"default_price_list": ["in", names]})
 	if n:
 		users.append(f"{n} Item Default row(s)")
+	# 'Standard' is not in use at all (lead, 2026-10-23): a user default of it also stops
+	for name in OPTIONAL:
+		if name in names:
+			n = user_defaults([name])
+			if n:
+				users.append(f"{n} user default(s) of {name}")
 	problems += [f"still sells with an archive: {u}" for u in users]
 	return problems
+
+
+def user_defaults(names):
+	return frappe.db.sql(
+		"select count(*) from `tabDefaultValue` where defkey in ('selling_price_list', 'price_list') and defvalue in %s"
+		" and parent not in ('__default', '__global')",
+		[names],
+	)[0][0]
 
 
 def references(ctx):
@@ -198,14 +243,7 @@ def references(ctx):
 		("Customer Group defaults", frappe.db.count("Customer Group", {"default_price_list": ["in", archives]})),
 		("Customer defaults", frappe.db.count("Customer", {"default_price_list": ["in", archives]})),
 		("Item Default rows", frappe.db.count("Item Default", {"default_price_list": ["in", archives]})),
-		(
-			"user defaults",
-			frappe.db.sql(
-				"select count(*) from `tabDefaultValue` where defkey = 'selling_price_list' and defvalue in %s"
-				" and parent not in ('__default', '__global')",
-				[archives],
-			)[0][0],
-		),
+		("user defaults", user_defaults(archives)),
 	]
 	for doctype in ("Quotation", "Sales Order", "Delivery Note", "Sales Invoice", "POS Invoice"):
 		if frappe.db.table_exists(doctype):
@@ -213,11 +251,11 @@ def references(ctx):
 				(f"draft {doctype}", frappe.db.count(doctype, {"docstatus": 0, "selling_price_list": ["in", archives]}))
 			)
 	for label, count in rows:
-		say(ctx, f"  references to SS/SPVN: {label}: {count}")
+		say(ctx, f"  references to the archives: {label}: {count}")
 
 
 def show(ctx, f):
-	for name in list(LISTS.values()) + list(ARCHIVES):
+	for name in list(LISTS.values()) + archives(f.lists):
 		info = f.lists.get(name)
 		count = frappe.db.count("Item Price", {"price_list": name})
 		say(
@@ -241,7 +279,11 @@ def plan(ctx):
 	for p in problems:
 		say(ctx, f"  GATE {p}")
 	say(ctx, "  would set: " + "; ".join(f"{c} default -> {n}" for c, n in LISTS.items()))
-	say(ctx, f"  would disable: {SS} (company stays blank), {SPVN} (company -> {ARCHIVES[SPVN]})")
+	say(
+		ctx,
+		"  would disable: "
+		+ ", ".join(f"{n} (company {'-> ' + ARCHIVES[n] if ARCHIVES[n] else 'stays blank'})" for n in archives(f.lists)),
+	)
 	say(ctx, f"  would set the page roles: {', '.join(r for r in PAGE_ROLES if frappe.db.exists('Role', r))}")
 	say(ctx, "PLAN: " + ("ready for apply" if not problems else f"{len(problems)} gate(s) fail: apply would stop"))
 
@@ -259,7 +301,7 @@ def apply(ctx):
 	f = facts()
 	if not before:
 		done = [c for c, n in LISTS.items() if f.defaults.get(c) == n] + [
-			n for n in ARCHIVES if f.lists.get(n) and not f.lists[n].enabled
+			n for n in (SS, SPVN) if f.lists.get(n) and not f.lists[n].enabled
 		]
 		if done:
 			raise Stop(
@@ -277,18 +319,24 @@ def apply(ctx):
 			continue
 		if now not in (None, "", before["defaults"].get(company)):
 			raise Stop(f"{company}: default list is {now}, neither the before-image nor {name}: drift, stop")
-		frappe.db.set_value("Company", company, price_lists.DEFAULT_FIELD, name)
+		frappe.db.set_value("Company", company, DEFAULT_FIELD, name)
 		say(ctx, f"  {company}: default selling list -> {name}")
 	frappe.db.commit()
 	price_lists.clear_caches()
 
-	# 3 archives, through the release's guard
-	if "archives" not in before:
-		before["archives"] = {
-			n: {"enabled": f.lists[n].enabled, "company": f.lists[n].company} for n in ARCHIVES
-		}
+	# 3 archives, through the release's guard (an archive missing from an older before-image is recorded first)
+	recorded = before.setdefault("archives", {})
+	missing = [n for n in archives(f.lists) if n not in recorded]
+	if missing:
+		for n in missing:
+			recorded[n] = {
+				"enabled": f.lists[n].enabled,
+				"company": f.lists[n].company,
+				"prices": frappe.db.count("Item Price", {"price_list": n}),
+			}
 		save_before(ctx, before)
-	for name, company in ARCHIVES.items():
+	for name in archives(f.lists):
+		company = ARCHIVES[name]
 		info = price_lists.lists()[name]
 		if not info.enabled and info.company == company:
 			continue
@@ -298,9 +346,9 @@ def apply(ctx):
 		doc = frappe.get_doc("Price List", name)
 		doc._doc_before_save = frappe.get_doc("Price List", name)
 		doc.enabled = 0
-		doc.set(price_lists.FIELD, company)
+		doc.set(FIELD, company)
 		price_lists.validate_price_list(doc)  # the release's guard: privileged user, not in use
-		frappe.db.set_value("Price List", name, {"enabled": 0, price_lists.FIELD: company})
+		frappe.db.set_value("Price List", name, {"enabled": 0, FIELD: company})
 		frappe.cache.hdel("price_list_details", name)
 		say(ctx, f"  {name}: disabled, company {company or '-'} ({frappe.db.count('Item Price', {'price_list': name})} prices kept)")
 	frappe.db.commit()
@@ -341,7 +389,8 @@ def verify(ctx):
 	for company, name in LISTS.items():
 		if f.defaults.get(company) != name or price_lists.company_default_list(company) != name:
 			problems.append(f"{company}: default list {f.defaults.get(company)}, not {name}")
-	for name, company in ARCHIVES.items():
+	for name in archives(f.lists):
+		company = ARCHIVES[name]
 		info = f.lists.get(name)
 		if not info or info.enabled or info.company != company:
 			problems.append(f"{name}: not a disabled archive of company {company or '-'}")
@@ -392,8 +441,7 @@ def verify(ctx):
 
 
 def rollback(ctx):
-	from fours_customizations import price_lists
-
+	"""Runs on the release and on fe153b5 (no import of the release's code)."""
 	before = load_before(ctx)
 	if not before:
 		say(ctx, "  no ps2-before.json: apply never wrote anything under this stamp")
@@ -408,7 +456,7 @@ def rollback(ctx):
 			say(ctx, f"  page roles -> {', '.join(before['page_roles']['roles']) or '-'}")
 		frappe.db.commit()
 	for name, was in (before.get("archives") or {}).items():
-		info = price_lists.lists().get(name)
+		info = read_lists().get(name)
 		if not info:
 			say(ctx, f"  {name}: gone, nothing to restore")
 			continue
@@ -416,21 +464,21 @@ def rollback(ctx):
 			continue
 		if (info.enabled, info.company) != (0, ARCHIVES[name]):
 			raise Stop(f"{name}: enabled {info.enabled} company {info.company} changed since apply: decide by hand")
-		frappe.db.set_value("Price List", name, {"enabled": was["enabled"], price_lists.FIELD: was["company"]})
+		frappe.db.set_value("Price List", name, {"enabled": was["enabled"], FIELD: was["company"]})
 		frappe.cache.hdel("price_list_details", name)
 		say(ctx, f"  {name}: enabled {was['enabled']}, company {was['company'] or '-'}")
 	frappe.db.commit()
-	price_lists.clear_caches()
+	clear_caches()
 	for company, was in (before.get("defaults") or {}).items():
-		now = frappe.db.get_value("Company", company, price_lists.DEFAULT_FIELD)
+		now = frappe.db.get_value("Company", company, DEFAULT_FIELD)
 		if now == was:
 			continue
 		if now != LISTS.get(company):
 			raise Stop(f"{company}: default list {now} changed since apply: decide by hand")
-		frappe.db.set_value("Company", company, price_lists.DEFAULT_FIELD, was)
+		frappe.db.set_value("Company", company, DEFAULT_FIELD, was)
 		say(ctx, f"  {company}: default selling list -> {was or '-'}")
 	frappe.db.commit()
-	price_lists.clear_caches()
+	clear_caches()
 	frappe.clear_cache()
 	say(ctx, "ROLLBACK done (caches cleared): run PS_MODE=plan to see the state")
 
