@@ -12,9 +12,9 @@ PS_TS    names the state directory /home/frappe/price-split/<PS_TS>/ (700; files
 apply (idempotent; each stage commits; a re-run skips what is done and stops on drift):
   1 gates   the release is live (price_lists hooks, Company default-list field); Phase 1 is in place (the three company
             lists exist, enabled, selling, UGX, of their company); no active Kit POS Location / enabled POS Profile, no
-            Selling Settings value, global default, Customer / Customer Group / Supplier / Supplier Group default or Item
-            Default row uses Standard Selling (SS), Selling Price Vox Nansana (SPVN) or the empty 'Standard' list
-            (user defaults and drafts: reported only; for 'Standard' a user default also stops)
+            Selling Settings value, global default, Customer / Customer Group / Supplier default (Supplier Group: where
+            it has the field) or Item Default row uses Standard Selling (SS), Selling Price Vox Nansana (SPVN) or the
+            empty 'Standard' list (user defaults and drafts: reported only; for 'Standard' a user default also stops)
   2 defaults Company.custom_default_selling_price_list of the three companies -> their list
   3 archive  SS, SPVN and 'Standard' disabled through the release's guard (price_lists.check_not_in_use + the Price List
             rules), written with db.set_value so ERPNext's Price List.on_update does not re-stamp the archive's Item
@@ -212,6 +212,8 @@ def gates(ctx, strict=True):
 	# a party's default replaces a POS invoice's list after the release's before_validate; an Item Default list is
 	# where a new item's price and a till quick-add go: none may point at an archive
 	for doctype in ("Customer Group", "Customer", "Supplier", "Supplier Group"):
+		if not frappe.get_meta(doctype).has_field("default_price_list"):
+			continue  # ERPNext v16: Supplier Group has none
 		n = frappe.db.count(doctype, {"default_price_list": ["in", names]})
 		if n:
 			users.append(f"{n} {doctype} default(s)")

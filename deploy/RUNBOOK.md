@@ -88,7 +88,7 @@ run apply     # -> "APPLY done"
 run verify    # read-only -> "VERIFY: OK"
 ```
 apply: (1) gates - the release is live, Phase 1's three lists exist (company, enabled, selling, UGX), nothing active
-(Kit POS Location, POS Profile, Selling Settings, global default, Customer / Customer Group / Supplier / Supplier Group
+(Kit POS Location, POS Profile, Selling Settings, global default, Customer / Customer Group / Supplier (/ Supplier Group)
 default, Item Default row; for 'Standard' also a user default) uses Standard Selling (SS), Selling Price Vox Nansana (SPVN)
 or the empty 'Standard' list; (2) Company defaults: 4S Industries Limited -> 4S Selling Price, Vox Lounge -> Vox Makindye
 Selling Price, Vox Lounge Nansana -> Vox Nansana Selling Price; (3) SS, SPVN and 'Standard' disabled through the release's
