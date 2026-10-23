@@ -49,10 +49,15 @@ doctype_js = {
 	"Sales Invoice": [
 		"public/js/sales_invoice.js",
 		"public/js/accounting_correction.js",
+		"public/js/selling_price_list.js",
 	],
 	"Payment Entry": "public/js/accounting_correction.js",
 	"Payroll Entry": "public/js/payroll_entry.js",
-	"Sales Order": "public/js/sales_order.js",
+	"Sales Order": ["public/js/sales_order.js", "public/js/selling_price_list.js"],
+	# Price list split: a new selling document leaves a disabled (archived) list for its company's list.
+	"Delivery Note": "public/js/selling_price_list.js",
+	"Quotation": "public/js/selling_price_list.js",
+	"POS Invoice": "public/js/selling_price_list.js",
 }
 # Quick Price Update (fqp-1): a button to the page on the Item Price list, for users who have the page.
 doctype_list_js = {"Item Price": "public/js/quick_price_item_price_list.js"}
@@ -153,11 +158,14 @@ has_permission = {
 	"Vox Kitchen Modifier Selection": "fours_customizations.vox_modifiers.private_has_permission",
 	# Quick Price Update audit rows: readable by everyone with Item Price read (DocPerm read is 'All').
 	"Quick Price Change": "fours_customizations.fours_customizations.doctype.quick_price_change.quick_price_change.has_permission",
+	# Price list split: restricted users see/change only prices of enabled lists of their companies (price_lists.py).
+	"Item Price": "fours_customizations.price_lists.item_price_has_permission",
 }
 permission_query_conditions = {
 	"Vox Kitchen Modifier Option": "fours_customizations.vox_modifiers.option_query_conditions",
 	"Vox Kitchen Modifier Selection": "fours_customizations.vox_modifiers.selection_query_conditions",
 	"Quick Price Change": "fours_customizations.fours_customizations.doctype.quick_price_change.quick_price_change.query_conditions",
+	"Item Price": "fours_customizations.price_lists.item_price_query_conditions",
 }
 
 # DocType Class
@@ -192,6 +200,7 @@ doc_events = {
 		"before_rename": "fours_customizations.vox_pilot_credit.guard_credit_approval",
 	},
 	"Delivery Note": {
+		"before_validate": "fours_customizations.price_lists.replace_disabled_selling_list",
 		"before_submit": "fours_customizations.delivery_note_handler.before_submit",
 		# A goods return that has already credited the customer must not be
 		# cancelled out from under its credit note, or they keep the goods and
@@ -227,6 +236,7 @@ doc_events = {
 			"fours_customizations.sales_invoice_handler.on_submit",
 		],
 		"before_validate": [
+			"fours_customizations.price_lists.replace_disabled_selling_list",
 			"fours_customizations.sales_invoice_handler.before_validate",
 			"fours_customizations.vox_work_orders.route_invoice_warehouses",
 		],
@@ -264,6 +274,7 @@ doc_events = {
 		"before_rename": "fours_customizations.vox_pilot_credit.guard_credit_invoice",
 	},
 	"Sales Order": {
+		"before_validate": "fours_customizations.price_lists.replace_disabled_selling_list",
 		"before_submit": "fours_customizations.sales_order_handler.before_submit",
 		"on_submit": "fours_customizations.sales_order_handler.on_submit",
 		"on_cancel": "fours_customizations.sales_order_handler.on_cancel",
@@ -292,6 +303,25 @@ doc_events = {
 		"before_cancel": "fours_customizations.vox_work_orders.guard_generated_document",
 		"on_trash": "fours_customizations.vox_work_orders.guard_generated_document",
 	},
+	# Price list split (price_lists.py): every rule is inactive until a Price List has a company.
+	"Quotation": {"before_validate": "fours_customizations.price_lists.replace_disabled_selling_list"},
+	"POS Invoice": {"before_validate": "fours_customizations.price_lists.replace_disabled_selling_list"},
+	"Item Price": {"validate": "fours_customizations.price_lists.validate_item_price"},
+	"Item": {"validate": "fours_customizations.price_lists.fill_item_default_price_lists"},
+	"Price List": {
+		"validate": "fours_customizations.price_lists.validate_price_list",
+		"before_rename": "fours_customizations.price_lists.before_rename_price_list",
+		"on_update": "fours_customizations.price_lists.forget",
+		"after_rename": "fours_customizations.price_lists.forget",
+		"on_trash": "fours_customizations.price_lists.forget",
+	},
+	"Company": {"on_update": "fours_customizations.price_lists.forget"},
+	"Kit POS Location": {"validate": "fours_customizations.price_lists.validate_consumer_list"},
+	"POS Profile": {"validate": "fours_customizations.price_lists.validate_consumer_list"},
+	"Customer": {"validate": "fours_customizations.price_lists.validate_party_default_list"},
+	"Customer Group": {"validate": "fours_customizations.price_lists.validate_party_default_list"},
+	"Supplier": {"validate": "fours_customizations.price_lists.validate_party_default_list"},
+	"Supplier Group": {"validate": "fours_customizations.price_lists.validate_party_default_list"},
 }
 
 # Scheduled Tasks
@@ -352,12 +382,13 @@ ignore_links_on_delete = ["Quick Price Change"]
 
 # Request Events
 # ----------------
-# before_request = ["fours_customizations.utils.before_request"]
+# Price list split: ERPNext's automatic price writes skip disabled lists and other item families (price_lists.py).
+before_request = ["fours_customizations.price_lists.patch_erpnext"]
 # after_request = ["fours_customizations.utils.after_request"]
 
 # Job Events
 # ----------
-# before_job = ["fours_customizations.utils.before_job"]
+before_job = ["fours_customizations.price_lists.patch_erpnext"]
 # after_job = ["fours_customizations.utils.after_job"]
 
 # User Data Protection

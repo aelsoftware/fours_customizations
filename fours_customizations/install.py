@@ -411,6 +411,17 @@ def create_company_custom_fields():
 				"insert_after": "selling_automations_tab",
 				"description": "Enable draft Delivery Note creation, return interlinking, and advance allocation on Sales Invoices.",
 			},
+			# Price list split: new Items' Item Defaults, documents leaving a disabled list, the Quick Price page and
+			# the landed cost handler use this list. Configuration, not access control: user permissions ignored.
+			{
+				"fieldname": "custom_default_selling_price_list",
+				"label": "Default Selling Price List",
+				"fieldtype": "Link",
+				"options": "Price List",
+				"insert_after": "enable_selling_automations",
+				"ignore_user_permissions": 1,
+				"description": "This company's own selling price list (price list split).",
+			},
 		],
 	}
 

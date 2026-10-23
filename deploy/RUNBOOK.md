@@ -1,119 +1,132 @@
-# fqp-1 Quick Price Update - deploy runbook (multax.kit.africa)
+# ps-fours-2 price list split, PHASE 2 (code + data step) - runbook (multax.kit.africa)
 
-Release: `fours_customizations` branch `feat/quick-price-update` (commit = the approved one, passed as `FQP_SHA`) on top of
-production's `7da0d29` (clean). Kit: `deploy_fqp.sh` + `fqp_check.py` (this directory). The lead deploys; the kit was
-rehearsed end to end on a private lab bench (`lab/`, see "Rehearsal").
+Release: `fours_customizations` branch `feat/price-list-split` (commit = the approved one, passed as `FQP_SHA`) on top of
+production's `fe153b5` (fqp-1 Quick Price, clean). Kit: `deploy_fqp.sh` + `fqp_check.py` (the fqp-1 blue/green kit with a
+new baseline, release ref, file list, smoke and private directories `/root/ps-deploy-multax/`, `/home/frappe/ps-release/`),
+then the data step `ps2.py`. Order: PHASE 1 (lead's ps1.py, data only) -> this code release -> `ps2.py apply`.
+The kit and ps2.py were rehearsed on the private lab bench (`lab/`, see "Rehearsal").
 
 ## What the release changes
 
-- New: page `quick-price-update` (Quick Price Update), DocType `Quick Price Change` (audit), Workspace `Pricing` + its
-  Workspace Sidebar and Desktop Icon, Item Price list button (`public/js/quick_price_item_price_list.js`), API module
-  `fours_customizations.quick_price`.
-- hooks.py: `doctype_list_js` (Item Price), `has_permission` / `permission_query_conditions` for Quick Price Change,
-  `ignore_links_on_delete = ["Quick Price Change"]`; `install.after_install` (= after_migrate) calls
-  `quick_price.setup.sync_access()`, which writes the page's **Custom Role** and the roles of the Pricing workspace and
-  icon = every role with full Item Price read except Kit TV Viewer, plus System Manager. Read from the site, never written:
-  no DocPerm / Custom DocPerm is created or changed by the release.
-- No patch, no new dependency, no Custom Field, no change to an existing DocType. No site setting is changed.
+Everything is behind `price_lists.split_active()` = the Price List field `custom_company` (Phase 1's Custom Field) exists
+and at least one list has a company. Without that, behaviour is fe153b5's. After Phase 1 the split IS active, so the rules
+below apply from the moment the code is live.
 
-## Rules the kit enforces
+- NEW `fours_customizations/price_lists.py`, wired in hooks.py:
+  - Item Price `has_permission` + `permission_query_conditions`: a user with a Company User Permission that applies to all
+    doctypes, Item Price or Price List reads/writes/creates/deletes only rows of ENABLED lists of their companies, and rows
+    of lists without a company (Standard Buying, ...) whose item is of their companies' item family ('4S Items' -> 4S;
+    'Vox Items' + 'Raw Kitchen Items' -> Vox Lounge / Vox Lounge Nansana; an item of no family -> only users of a company
+    outside the families, e.g. Multax). A write/delete checks the stored row and the new values. Administrator, users without
+    such a row and Kit POS device sessions keep full access.
+  - Price List validate/before_rename: only Administrator or a System Manager without a Company row may rename a list or
+    change enabled, selling, buying, currency, price_not_uom_dependent or custom_company; a new selling list needs a
+    company; a list stays enabled while an active Kit POS Location or enabled POS Profile uses it.
+  - Kit POS Location (active) / POS Profile (enabled): an enabled list of their own company or of no company.
+  - Item Price in a company list: allowlist by item family (site_config `fours_price_list_item_guard: 0` turns it off;
+    `fours_price_list_families` replaces the family map).
+  - Customer / Customer Group / Supplier (/ Supplier Group): a restricted user sets only a blank default list or an
+    enabled list of their companies or of no company.
+  - Quotation, Sales Order, Delivery Note, Sales Invoice, POS Invoice `before_validate`: a DISABLED selling list becomes
+    the company's default list (same currency); line rates are kept (no re-pricing), so a missing price is auto-inserted
+    into the enabled list, never into the archive. Same in the form (`public/js/selling_price_list.js`, onload/company,
+    without the field's change event).
+  - Item validate: a NEW item's Item Default rows without a list get the company's default list (Kit POS quick-add and
+    ERPNext's Standard Selling Rate then write only the branch's list).
+- fours copies of a source document's list (price_adjustment.py, sales_invoice_handler.py DN return, sales_order_handler.py
+  DN) use the original only if enabled, else the company default.
+- landed_cost_handler: only enabled selling lists of the voucher's company in the company currency; a missing price goes
+  to the company default list.
+- Quick Price page API: a company's lists are its own enabled selling lists (default first, no Selling Settings fallback);
+  companies and selectable lists follow the desk's Company rule; a company's list is never "shared"; prices of another
+  company's item family on lists without a company are hidden; an item outside a list's family is locked with the reason.
+- install.after_install (= after_migrate): NEW Custom Field `Company.custom_default_selling_price_list` (Link Price List,
+  ignore_user_permissions 1). No patch, no DocPerm / Custom DocPerm change (Vox Accountant stays at 48: the kit's vox-fix).
 
-- The bench is SHARED (ddamu, demo, erp.kit.africa, jamissang.efris.kit.africa, jamissang.kit.africa, multax.kit.africa,
-  pma-validation.local, tobi). Only `bench --site multax.kit.africa migrate`; never `bench migrate` without `--site`,
-  never `--site all`, never ddamu (it stays in maintenance), never `bench restart` / `bench update`.
-- precheck reads every site's installed apps: if a site other than multax has `fours_customizations`, the kit stops
-  (that site would get the code without a migrate); `FQP_ACK_OTHER_FOURS=<sites>` is the lead's explicit decision.
-- precheck: `apps/fours_customizations` HEAD = `7da0d29`, `git status` clean; the release descends from it and changes no
-  patches/dependencies; nothing else pending for any app of multax (patches or files migrate would import), else stop
-  (`FQP_ACK_SYNC=<apps>` after reading the list).
-- Backup of multax (`--with-files`) and of the app tree (tar + sha256) before the swap.
-- Code swap = one `mv --exchange -T` (two renames as fallback); previous tree kept as `apps/.fours_customizations-prev-<TS>`.
-- `bench build --app fours_customizations` only; the other apps' asset manifest/links are compared before/after.
-- After migrate: **Vox Accountant Custom DocPerm rows must still be 48**. The baseline rows (saved in `backup` as
-  `facts-before.json`) are the legitimate ones; rows the migrate re-adds (fours' and kit_pos' own after_migrate re-add
-  Vox Accountant grants, e.g. Sales Invoice read and Voided Bill) are removed, changed rows restored, and the count must
-  be 48 again (exit 2 otherwise; a missing baseline row is reported, not invented). Every other role's Custom DocPerm rows,
-  `site_config.json` (except the kit's own `pause_scheduler`) and the kit_pos switches (site_config `kit_pos*`/`vox_*`
-  keys, `Kit POS*` settings values) must be unchanged.
-- Reload = gunicorn HUP (graceful, wait for old workers), workers group restart, `clear-cache` + `scheduler resume` of
-  multax only.
-- postcheck: every other site (jamissang.kit.africa included) fingerprinted before and after (patch log, DocTypes, Custom
-  DocPerm rows + hash, schema size, apps, scheduler, maintenance, site_config hash): must be identical; ddamu still in
-  maintenance.
+Note: fours' after_migrate `quick_price.setup.sync_access` re-syncs the Quick Price page roles on every migrate. The kit
+puts back the page roles it found before the deploy (`page-roles`), so Phase 1's pause holds until `ps2.py apply`.
 
-## Before the window
+## Code release (the fqp-1 kit procedure, new constants)
 
-1. On kit-build: `deploy/make_bundle.sh /opt/build/fours-qp-wt <approved sha> <dir>/fqp-release.bundle` (prints
-   `FQP_SHA` and the bundle's sha256). Copy `deploy_fqp.sh`, `fqp_check.py` and the bundle to a root-only directory on
-   multax (e.g. `/root/fqp-deploy-kit/`, 700). Alternatively the lead pushes the branch and sets `FQP_REF`.
-2. `FQP_SHA=<sha> FQP_BUNDLE=/root/fqp-deploy-kit/fqp-release.bundle ./deploy_fqp.sh precheck` - read every line;
-   it prints the sites with fours_customizations, the pending list, the Vox Accountant count (must be 48), the Item Price
-   read / write roles, the other-site fingerprints. It also previews what the release migrate imports
-   (5 new records: DocType Quick Price Change, Page quick-price-update, Workspace / Workspace Sidebar / Desktop Icon Pricing).
+1. kit-build: `deploy/make_bundle.sh /opt/build/fours-ps-wt <approved sha> <dir>/ps-release.bundle` (prints `FQP_SHA` and
+   the sha256). Copy `deploy_fqp.sh`, `fqp_check.py`, `ps2.py` and the bundle to multax `/root/ps-deploy-kit/` (700).
+2. `FQP_SHA=<sha> FQP_BUNDLE=/root/ps-deploy-kit/ps-release.bundle ./deploy_fqp.sh precheck` - HEAD must be fe153b5, clean;
+   facts gate: the fqp-1 objects exist, the Company field does not yet; Vox Accountant = 48.
+3. Window:
+   ```
+   export FQP_SHA=<sha> FQP_BUNDLE=/root/ps-deploy-kit/ps-release.bundle
+   ./deploy_fqp.sh backup
+   ./deploy_fqp.sh window        # code, build, migrate (+ vox-fix + page-roles), reload
+   ./deploy_fqp.sh verify        # smoke: 11 hooks, Company field, per restricted price reader the Item Price list query
+                                 # = the Python rule with 0 rows of another company's list / a disabled list, family
+                                 # counts of the company lists, consumers, page lists per company; manual list
+   ./deploy_fqp.sh postcheck     # other sites unchanged
+   ```
+   Web probe: Guest `fours_customizations.price_lists.selling_list_replacement` 417 before, 403 after; asset
+   `/assets/fours_customizations/js/selling_price_list.js` 404 before, 200 after.
 
-## Window (about 2 minutes of work, scheduler of multax paused for about 1 minute)
+## Data step ps2.py (right after verify)
 
 ```
-export FQP_SHA=<sha> FQP_BUNDLE=/root/fqp-deploy-kit/fqp-release.bundle
-./deploy_fqp.sh backup
-./deploy_fqp.sh window        # = code, build, migrate, reload (stops at the first failed gate)
-./deploy_fqp.sh verify        # read-only smoke + manual browser list
-./deploy_fqp.sh postcheck     # other sites unchanged
+install -d -o frappe -g frappe -m 700 /home/frappe/price-split/kit
+install -o frappe -g frappe -m 600 /root/ps-deploy-kit/ps2.py /home/frappe/price-split/kit/ps2.py
+run() { su - frappe -c "cd /home/frappe/frappe-bench && PS_MODE=$1 PS_TS=<stamp, e.g. 20261024T0400Z-ps2> bench --site multax.kit.africa console" \
+        <<< $'\nexec(open("/home/frappe/price-split/kit/ps2.py").read(), globals())'; }
+run plan      # read-only: lists, Company defaults, page roles, references to SS/SPVN, gates -> "PLAN: ready for apply"
+run apply     # -> "APPLY done"
+run verify    # read-only -> "VERIFY: OK"
 ```
+apply: (1) gates - the release is live, Phase 1's three lists exist (company, enabled, selling, UGX), nothing active
+(Kit POS Location, POS Profile, Selling Settings, global default) sells with Standard Selling (SS) or Selling Price Vox
+Nansana (SPVN); (2) Company defaults: 4S Industries Limited -> 4S Selling Price, Vox Lounge -> Vox Makindye Selling Price,
+Vox Lounge Nansana -> Vox Nansana Selling Price; (3) SS and SPVN disabled through the release's guard
+(`price_lists.validate_price_list`: privileged user, not in use), written with db.set_value so ERPNext's Price List
+on_update does not re-stamp `modified` on the archives' Item Prices; SS keeps a blank company, SPVN gets Vox Lounge Nansana;
+(4) the page's Custom Role gets Sales Master Manager, 4S Accountant, Sales User, System Manager, Vox Accountant, Purchase
+Master Manager; (5) `fours_quick_price:*` redis keys, ERPNext's `price_list_details` of both archives, the site cache.
+Every changed value is saved first in `/home/frappe/price-split/<stamp>/ps2-before.json` (+ `.sha256`, 600); log
+`ps2-log.txt`. Re-runs skip what is done; a value that is neither the before-image nor the target stops (drift).
+Prints names of lists/companies/roles, counts and 8-hex user hashes only.
 
-Phases can also be run one by one (`code`, `build`, `migrate`, `reload`). Each phase is re-runnable after a fix;
-`status` summarises. Logs: `/root/fqp-deploy-multax/`; private facts: `/home/frappe/fqp-release/<TS>/`.
-
-Window between `code` and `migrate`: the new files are on disk while the schema is the old one. Nothing breaks:
-the Item Price list button appears only for users who already have the page (none until the migrate creates it), and
-the API refuses everyone (no page record). Keep the gap short anyway.
-
-The web check (Guest calls to `fours_customizations.quick_price.api.get_context`) answers 417 before the swap and 403
-after it. It is not proof that every worker was reloaded (an old worker imports the new module from disk on demand); the
-reload phase proves that by waiting until every old gunicorn worker pid has exited. With `--preload` the new workers are
-forked from the gunicorn master, which has imported frappe only (Frappe imports an app's modules per request, per site),
-so they load fours_customizations from the new tree - the same HUP procedure as the 2026-10-21 Jamissang deploy on this
-bench, and what the lab rehearsal (gunicorn --preload) shows.
-
-## Manual checks after `verify` (browser)
-
-1. A Vox Accountant: the Item Price list shows "Quick Price Update"; the page lists Vox Lounge / Vox Lounge Nansana
-   (their Company User Permissions); the header says "Standard Selling is used by 4S Industries Limited, Vox Lounge and Vox
-   Lounge Nansana: a change applies to all of them".
-2. A 4S Accountant: the page opens for 4S Industries Limited; every price cell is locked (no Item Price write today).
-3. A Kit TV Viewer: no button; the page says "Not permitted".
-4. Desk search "Quick Price" offers the page to users who have it; the Pricing workspace (desk icon "Pricing") shows the
-   shortcut.
-5. One real change by an authorised user, on an item the owner chooses: the Item Price changes, a Quick Price Change
-   row appears, and the Item Price has a Version (track_changes is on for Item Price).
+### After ps2 (browser)
+1. A Vox Accountant (Makindye): Item Price list = Makindye list + Standard Buying rows of bar items; no 4S item, no
+   Nansana row, no Standard Selling row (disabled archive).
+2. A 4S Accountant: only 4S-list rows and 4S items on Standard Buying.
+3. Quick Price page: each company shows its own list only; save one price (owner's choice).
+4. Amend one pre-split non-POS invoice: the list switches to the company's list, rates stay; change qty: no
+   'Price List Standard Selling is disabled' error.
+5. Desk tabs open since before the window: hard reload (stale `selling_price_list` default; the form script switches new
+   documents anyway).
 
 ## Rollback
 
-`FQP_SHA=<sha> ./deploy_fqp.sh rollback`: previous tree back (from `apps/.fours_customizations-prev-<TS>`, or rebuilt
-from the tree tarball, sha256 checked), `bench --site multax.kit.africa migrate` (Frappe removes the page, the DocType
-record, the workspace/sidebar/icon whose files left), the Vox Accountant rows back to the baseline again, the release's
-Custom Role / Pricing records removed if still there, `bench build --app fours_customizations`, reload (web check: 417).
-What stays: the `tabQuick Price Change` table and its rows (audit); prices changed through the page keep their new rates
-(their Versions show the old ones). Restoring the backup is a platform-owner decision (it loses every transaction since).
+- Data step: `run rollback` (same stamp) - page roles, SS/SPVN enabled + company, Company defaults back from the
+  before-image (reverse order), caches. Safe after a partial apply; a value changed since apply stops for a decision.
+- Code: `FQP_SHA=<sha> ./deploy_fqp.sh rollback` - previous tree back, migrate multax, vox-fix, page roles back to the
+  pre-deploy ones (the old page code must not run against Phase 1 data: it stays paused), `rollback-cleanup` removes the
+  Company field only while every company value is blank (else WARN: run `ps2.py rollback`, then
+  `fqp_check.py rollback-cleanup --site multax.kit.africa --apply`), build, reload (probe 417). Phase 1's data stays.
+- Order for a full undo: `ps2.py rollback` -> `deploy_fqp.sh rollback` -> Phase 1's own rollback (lead's ps1.py).
 
-## Who can update prices (unchanged by this release - the owner decides)
+## Residuals (owner decisions; not in this release)
 
-The page shows every cell the user may change according to Item Price permissions and their User Permissions; it never
-grants anything. On multax today (2026-10-22 facts): Item Price write/create = Sales Master Manager, Purchase Master
-Manager, Vox Accountant; 4S Accountant and Sales User read only. So **no 4S user can update prices** today: they see the
-page with every cell locked. To change that, the owner grants Item Price write (and create, for prices that do not exist
-yet) to the chosen role in Role Permissions Manager; after a change of who may READ Item Prices, run
-`bench --site multax.kit.africa execute fours_customizations.quick_price.setup.sync_access` so the page/workspace roles
-follow (it also runs on every migrate). Note: Item Price has one list for many companies: a writer of 'Standard Selling'
-changes the price for Vox Lounge, 4S and Vox Lounge Nansana at once (the page says so before saving).
+- Not a hard confidentiality boundary: ERPNext whitelisted readers (get_item_details, apply_price_list, POS get_items),
+  script reports ('Item Prices', 'Item Price Stock', tally 'Item Prices Report') and dashboard counts read prices without
+  this rule; Kit POS devices running as Administrator and staff with all locations see every location's catalogue.
+- Stock Settings (`update_existing_price_list_rate`, `auto_insert_price_list_rate_if_missing`) stay writable by Vox
+  Accountant; 'Standard' (enabled, selling, no company, 0 prices) can still be set as a party default by a restricted user.
+- Users without an applicable Company row stay unrestricted (Administrator, 2279435b, e79777e7, c2bf681c unless Phase 1
+  gives it a row).
+- The family allowlist refuses: a price of an item outside the list's family by ANY writer, including ERPNext's
+  auto-insert on a desk sale by a price writer, a new item with a Standard Selling Rate whose list (Item Default or
+  Selling Settings = 4S list) is of another family, Kit POS quick-add of an item in another family, and the landed cost
+  handler's insert. The message names the item, its group and the list.
+- 4S EFRIS (/opt/build/4s-efris-setup lib4s.php) accepts only 'Standard Selling' prices: update before its go-live.
 
 ## Rehearsal (lab only)
 
-`lab/` holds the private-bench rehearsal in `kasc-bom-lab` (never the shared lab bench): `setup.sh` (private bench with
-clones of labvox/labdemo/labddamu as multax/demo/ddamu stand-ins), `mklab.sh` (lab copy of the kit: bench path, site
-names, lab Vox count; printed diff), `supervisorctl` (stand-in: gunicorn --preload + one worker), `rehearse.sh reset |
-forward | rollback | reforward`, `reclone.sh`, `teardown.sh`. Tests, browser check and mutants: `push-tree.sh`,
-`serve.sh`, `seed_ui.py`, `ui_check.mjs` (headless Chromium in kasc-bom-tills), `perf.py`, `mutate.py`, `race_probe.py`
-(two real connections: a price committed by another user after this request's snapshot is refused, not duplicated),
-`negative.sh` (the kit's gates stop on a local code change, a Vox count other than the baseline, a wrong FQP_SHA and a
-baseline Vox row missing after migrate).
+`lab/` in `kasc-bom-lab` (private bench `/home/frappe/fqp-bench`, never the shared lab bench): `rehearse.sh <kit> reset`
+(fqpm.lab recloned from labvox, migrated at fe153b5, production Item Price rules + lab users, Vox owner removals, Phase 1
+simulated by `ps1_standin.py`), `forward` (kit precheck..postcheck, then ps2 plan/apply/verify), `rollback` (ps2
+rollback, kit rollback, rollback-cleanup), `reforward`. Tests: `push-tree.sh`, then `bench --site fqpm.lab run-tests
+--module fours_customizations.tests.test_price_lists` (and `test_quick_price_update`); mutants: `mutate_ps.py`.

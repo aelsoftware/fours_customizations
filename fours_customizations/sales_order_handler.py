@@ -20,6 +20,8 @@ import frappe
 from frappe.utils import flt, fmt_money, nowdate
 from erpnext.accounts.party import get_party_account
 
+from fours_customizations.price_lists import selling_list_for
+
 # ── helpers ───────────────────────────────────────────────────────────────────
 
 def _automation_enabled(company: str) -> bool:
@@ -498,7 +500,8 @@ def _create_delivery_note(doc):
 	dn.sales_partner     = doc.sales_partner
 	dn.currency          = doc.currency
 	dn.conversion_rate   = doc.conversion_rate
-	dn.selling_price_list      = doc.selling_price_list
+	# the order's list unless it has been disabled (price list split): then the company's own list
+	dn.selling_price_list      = selling_list_for(doc.selling_price_list, doc.company, doc.price_list_currency)
 	dn.price_list_currency     = doc.price_list_currency
 	dn.plc_conversion_rate     = doc.plc_conversion_rate
 	dn.ignore_pricing_rule     = 1

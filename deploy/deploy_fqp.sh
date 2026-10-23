@@ -1,14 +1,15 @@
 #!/bin/bash
-# deploy_fqp.sh - fqp-1 Quick Price Update (fours_customizations feat/quick-price-update) on the SHARED Kit Enterprise bench on
-# multax, site multax.kit.africa ONLY. Modelled on ops/20261021-jamissang-deploy/deploy_jm.sh (same bench, same graceful reload).
-# Runbook: RUNBOOK.md next to this file.
+# deploy_fqp.sh - ps-fours-2 price list split code release (fours_customizations feat/price-list-split, on top of the fqp-1
+# Quick Price release fe153b5) on the SHARED Kit Enterprise bench on multax, site multax.kit.africa ONLY. The fqp-1 kit with a
+# new baseline, release ref, file list, smoke and private directories (it never reads the fqp-1 deploy's state). The data
+# step that follows the code (Company default lists, archives, page roles) is ps2.py. Runbook: RUNBOOK.md next to this file.
 #
 # Run as root on multax from a directory holding this file and fqp_check.py. bench and git run as the bench user (frappe)
 # through 'su - frappe'. Each call runs ONE phase, prints ids, names and counts only, stops at its first failed gate (exit 2)
-# and logs to /root/fqp-deploy-multax/ (700). Private data (facts, backups metadata, tree tarball) go to
-# /home/frappe/fqp-release/<TS>/ (700/600).
+# and logs to /root/ps-deploy-multax/ (700). Private data (facts, backups metadata, tree tarball) go to
+# /home/frappe/ps-release/<TS>/ (700/600).
 #
-#   precheck   read-only: sites and which have fours_customizations, code = baseline 7da0d29 (clean), release commit
+#   precheck   read-only: sites and which have fours_customizations, code = baseline fe153b5 (clean), release commit
 #              (FQP_SHA from FQP_BUNDLE or origin) descends from it, pending patches/syncs of every app on multax, Vox
 #              Accountant Custom DocPerm rows = 48 (saved as the baseline), Item Price rules, site_config/kit_pos switches,
 #              other-site fingerprints (jamissang, ddamu ...), disk, supervisor, jobs
@@ -16,12 +17,15 @@
 #   code       release copy at FQP_SHA, checks, scheduler pause (multax), swap (one rename)               -> T_swap
 #   build      bench build --app fours_customizations (other apps' assets must stay as they are)
 #   migrate    bench --site multax.kit.africa migrate; Vox Accountant rows back to the 48 baseline (re-added rows removed);
-#              other roles' permissions, site_config and kit_pos switches unchanged
+#              the Quick Price page roles back to the pre-deploy ones (sync_access re-syncs them on every migrate: the
+#              Phase 1 pause stays until ps2.py); other roles' permissions, site_config and kit_pos switches unchanged
 #   reload     gunicorn HUP (graceful), workers group restart, clear-cache + scheduler resume (multax)    -> T_done
-#   verify     read-only smoke: release objects, page roles = Item Price read roles, API answers, Error Log; manual list
+#   verify     read-only smoke: hooks loaded, Company default-list field, split rules hold per restricted user, consumers,
+#              page lists per company, Error Log; manual list
 #   postcheck  read-only: every other site (jamissang, ddamu, demo ...) not migrated and not changed
 #   window     code + build + migrate + reload, one after the other (stops at the first failed gate)
-#   rollback   previous tree back, migrate multax, Vox fix, release records removed, build, reload
+#   rollback   previous tree back, migrate multax, Vox fix, the release's Company field removed (only while empty: run
+#              'ps2.py rollback' first), build, reload
 #   status     read-only summary
 #
 # Never on this bench: bench restart, bench update, 'bench migrate' without --site, '--site all', migrate of any other site
@@ -29,9 +33,9 @@
 # Vox Accountant rows back to the baseline. Never prints secrets (remote URLs masked, site_config values hashed).
 #
 # Environment (each one an explicit lead decision, printed in the log):
-#   FQP_SHA=<sha>                 REQUIRED from 'code' on (optional in precheck): the approved commit of feat/quick-price-update
+#   FQP_SHA=<sha>                 REQUIRED from 'code' on (optional in precheck): the approved commit of feat/price-list-split
 #   FQP_BUNDLE=/path/file.bundle  fetch the release from a git bundle (made with make_bundle.sh) instead of origin
-#   FQP_REF=refs/heads/...        the ref to fetch from origin when there is no bundle (default refs/heads/feat/quick-price-update)
+#   FQP_REF=refs/heads/...        the ref to fetch from origin when there is no bundle (default refs/heads/feat/price-list-split)
 #   FQP_ACK_SYNC=app1,app2        accept that migrate also runs/imports these apps' pending patches/files (after reading the list)
 #   FQP_ACK_OTHER_FOURS=s1,s2     accept that these other sites have fours_customizations (they get the code, never a migrate)
 #   FQP_ACK_PERMS=1               accept other roles' permission changes made by migrate (after reading the list)
@@ -42,18 +46,18 @@ umask 077
 BENCH=/home/frappe/frappe-bench
 SITE=multax.kit.africa                                  # the only site this kit migrates
 APP=fours_customizations
-BASELINE=7da0d2953565d19336bc0d998c79a272d8b589eb       # production apps/fours_customizations on multax, clean (2026-10-22)
+BASELINE=fe153b5c29512a574b35c06fb1a801d7d29a704c       # production apps/fours_customizations on multax (fqp-1), clean (2026-10-23)
 EXPECT_VOX=48                                           # Vox Accountant Custom DocPerm rows on multax (baseline = legitimate)
 EXPECT_SITES="ddamu.kit.africa demo.kit.africa erp.kit.africa jamissang.efris.kit.africa jamissang.kit.africa multax.kit.africa pma-validation.local tobi.kit.africa"
 DDAMU=ddamu.kit.africa                                  # stays in maintenance; never migrated
 JM_SITE=jamissang.kit.africa                            # must stay unaffected (fingerprinted with every other site)
 WEB_PROG=frappe-bench-web:frappe-bench-frappe-web       # program names used by the 2026-10-21 deploy on this bench
 WORKERS=frappe-bench-workers                            # supervisor group: RQ workers + scheduler
-PROBE=/api/method/fours_customizations.quick_price.api.get_context   # Guest: 403 with the release, 417 without it
-ASSET=/assets/fours_customizations/js/quick_price_item_price_list.js
-RUN=/home/frappe/fqp-release
+PROBE=/api/method/fours_customizations.price_lists.selling_list_replacement   # Guest: 403 with the release, 417 without it
+ASSET=/assets/fours_customizations/js/selling_price_list.js
+RUN=/home/frappe/ps-release
 KIT=$RUN/kit
-LOGDIR=/root/fqp-deploy-multax
+LOGDIR=/root/ps-deploy-multax
 PY=$BENCH/env/bin/python
 HERE=$(cd "$(dirname "$0")" && pwd)
 PHASE=${1:-}
@@ -81,7 +85,7 @@ running() {
 }
 mark() { date -u +%FT%TZ > "$STATE/$1.ok"; echo "PASSED: $1 ($(date -u +%FT%TZ))"; }
 need() { [ -f "$STATE/$1.ok" ] || stop "phase '$1' has not passed for deploy $TS: run it first"; }
-need_sha() { [[ ${FQP_SHA:-} =~ ^[0-9a-f]{40}$ ]] || stop "set FQP_SHA to the approved 40-character commit of feat/quick-price-update"; }
+need_sha() { [[ ${FQP_SHA:-} =~ ^[0-9a-f]{40}$ ]] || stop "set FQP_SHA to the approved 40-character commit of feat/price-list-split"; }
 
 ts_load() {
 	TS=$(asf "cat $RUN/DEPLOY_TS 2>/dev/null")
@@ -118,7 +122,7 @@ install_kit() {
 
 # The release commit into <repo> (apps/fours_customizations or the release copy) as refs/fqp/release, from the bundle or origin.
 fetch_release() {
-	local repo=$1 ref=${FQP_REF:-refs/heads/feat/quick-price-update}
+	local repo=$1 ref=${FQP_REF:-refs/heads/feat/price-list-split}
 	if [ -n "${FQP_BUNDLE:-}" ]; then
 		[ -f "$FQP_BUNDLE" ] || { echo "  FQP_BUNDLE $FQP_BUNDLE not found"; return 1; }
 		install -o frappe -g frappe -m 600 "$FQP_BUNDLE" "$KIT/release.bundle" || return 1
@@ -217,6 +221,10 @@ do_reload() {   # graceful HUP of gunicorn, workers group restart, clear-cache +
 vox_fix() {   # Vox Accountant rows back to the precheck baseline (rows re-added by migrate removed, changed rows restored)
 	say "Vox Accountant Custom DocPerm rows: still $EXPECT_VOX (the baseline); rows a migrate re-added are removed"
 	chk vox-fix --site $SITE --baseline $D/facts-before.json --expect $EXPECT_VOX --apply || stop "Vox Accountant rows: see above (the baseline file is $D/facts-before.json)"
+}
+page_fix() {  # fours' after_migrate (sync_access) re-syncs the Quick Price page roles: keep the pre-deploy ones (Phase 1 pause)
+	say "Quick Price page roles as before the deploy (ps2.py resumes the page; a rollback keeps it paused)"
+	chk page-roles --site $SITE --baseline $D/facts-before.json --apply || stop "page roles: see above"
 }
 
 # ------------------------------------------------------------------------------------------------------------------------------
@@ -355,7 +363,8 @@ code)
 	chk jsoncheck --dir $BENCH/$R/$APP | sed 's/^/  /'; [ "${PIPESTATUS[0]}" -eq 0 ] || stop "bad JSON in the release"
 	asf "git -C $R diff --stat $BASELINE HEAD | tail -1" | sed 's/^/  size of the change: /'
 	asf "git -C $R diff --name-only $BASELINE HEAD -- $APP/patches.txt pyproject.toml requirements.txt package.json" | grep -q . && stop "the release changes patches.txt / dependencies"
-	for f in $APP/quick_price/api.py $APP/fours_customizations/doctype/quick_price_change/quick_price_change.json $APP/fours_customizations/page/quick_price_update/quick_price_update.json; do
+	asf "grep -q 'fours_customizations.price_lists.item_price_has_permission' $R/$APP/hooks.py" && echo "  hooks.py wires price_lists" || stop "the release's hooks.py does not wire price_lists"
+	for f in $APP/price_lists.py $APP/public/js/selling_price_list.js $APP/quick_price/api.py $APP/landed_cost_handler.py $APP/tests/test_price_lists.py; do
 		asf "test -f $R/$f" || stop "release lacks $f"
 	done
 	nfr=$(find "$BENCH/$R" ! -user frappe | wc -l); [ "$nfr" -eq 0 ] || stop "$nfr paths in the release copy are not owned by frappe"
@@ -402,6 +411,7 @@ migrate)
 	tr '\r' '\n' < "$LOGDIR/$TS-migrate.out" | grep -v -E '^\s*$|Updating DocTypes|^Deleting|^Removing orphan' | tail -15 | sed 's/^/  | /'
 	[ "$rc" -eq 0 ] || stop "migrate failed (rc $rc): re-run 'migrate' (idempotent) or 'rollback'"
 	vox_fix
+	page_fix
 	say "every other permission, site_config and the kit_pos switches as before"
 	chk facts --site $SITE --out $D/facts-after-migrate.json || stop "facts after migrate"
 	if ! chk perms-compare --before $D/facts-before.json --after $D/facts-after-migrate.json; then
@@ -430,14 +440,14 @@ verify)
 	asset_check "$ASSET" 200
 	cat <<-EOF
 	== manual checks (browser) - tick each in the change log:
-	   1  as a Vox Accountant: Item Price list shows 'Quick Price Update'; the page opens; Vox Lounge / Vox Lounge Nansana
-	      only (their Company User Permissions); 'Standard Selling is used by ...: a change applies to all of them'
-	   2  as a 4S Accountant: the page opens, 4S Industries Limited; every price cell locked (no Item Price write today)
-	   3  as a Kit TV Viewer: no button, the page is 'Not permitted'
-	   4  desk search 'Quick Price' offers the page (users with the page only); Pricing workspace shows the shortcut
-	   5  one real change by an authorised user (owner's choice of item): the Item Price changes, a Quick Price Change row
-	      appears (Quick Price Change list), and Version on the Item Price
-	   6  hard refresh; open Item Price, Sales Invoice and the Kit POS desk pages: no JS errors in the console
+	   1  as the Makindye Vox Accountant: Item Price list shows only Makindye-list rows, Standard Selling rows of bar items
+	      and Standard Buying rows of bar items (no 4S item, no Nansana-list row)
+	   2  as a 4S Accountant: Item Price list shows only 4S-list rows and 4S items on lists without a company
+	   3  as a Vox Accountant: open Price List 'Standard Selling', tick Enabled off, save -> refused ('Only an administrator')
+	   4  a new Sales Invoice (Vox Lounge) from Desk: the price list is the company's own list after ps2.py; amend one
+	      pre-split invoice: the list shows the company's list, line rates unchanged, qty change re-prices only that row
+	   5  hard refresh; open Item Price, Sales Invoice, Quotation and the Kit POS desk pages: no JS errors in the console
+	   6  the data step follows: ps2.py plan / apply / verify (RUNBOOK.md); the Quick Price page stays paused until then
 	Smoke result (automated checks PASS at $(date -u +%FT%TZ)); T_swap $(cat "$STATE/T_swap"), T_done $(cat "$STATE/T_done")
 	EOF
 	mark verify
@@ -488,12 +498,13 @@ rollback)
 	asf "bench --site $SITE migrate" > "$LOGDIR/$TS-rollback-migrate.out" 2>&1 || stop "rollback migrate failed: $LOGDIR/$TS-rollback-migrate.out"
 	tr '\r' '\n' < "$LOGDIR/$TS-rollback-migrate.out" | grep -v -E '^\s*$|Updating DocTypes' | tail -8 | sed 's/^/  | /'
 	D=$DL vox_fix
+	D=$DL page_fix
 	chk rollback-cleanup --site $SITE --apply || stop "release records cleanup failed"
 	chk smoke --site $SITE --pre || stop "release objects still present after the rollback"
 	asf "bench build --app $APP" > "$LOGDIR/$TS-rollback-build.out" 2>&1 || stop "rollback build failed: $LOGDIR/$TS-rollback-build.out"
 	do_reload 417 404
-	echo "  what stays: the tabQuick Price Change table and its rows (audit); Item Prices changed through the page keep their"
-	echo "  new rates (Versions show the old ones). Last resort for data: the backup of $TSL - a platform-owner decision."
+	echo "  what stays: the Phase 1 data (company lists, prices, consumers); prices changed meanwhile keep their new rates"
+	echo "  (Versions show the old ones). Last resort for data: the backup of $TSL - a platform-owner decision."
 	mark rollback
 	;;
 # ------------------------------------------------------------------------------------------------------------------------------

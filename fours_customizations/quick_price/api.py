@@ -11,6 +11,10 @@ Rules:
   validations and Version tracking apply. Only the audit row (Quick Price Change) is inserted by this code.
 - The editable state shown per cell is a dry run of Item Price write (existing record) or create (new record).
 - A price list is shared by every company that sells with it: the page says so per list and per item.
+- Price list split (fours_customizations/price_lists.py), once lists belong to companies: a company's lists are its own
+  enabled selling lists (its default list first); companies and lists follow the desk's Company rule; a company's own
+  list is never shared; cells the user may not see on a list without a company (another company's item family) are
+  hidden, and an item outside a company list's family is locked with the reason.
 """
 
 import json
@@ -19,6 +23,8 @@ import frappe
 from erpnext.stock.get_item_details import get_item_price
 from frappe import _
 from frappe.utils import add_days, cint, flt, get_fullname, now_datetime, nowdate
+
+from fours_customizations import price_lists
 
 PAGE = "quick-price-update"
 SOURCE = "Quick Price Update"
@@ -102,6 +108,9 @@ def get_items(
 		uom = row.sales_uom or row.stock_uom
 		factor = factors.get((row.item_code, uom), 1.0)
 		for price_list in ctx.lists:
+			if not cell_visible(row.item_code, price_list):
+				cells[(row.item_code, price_list)] = {"item_price": None, "rate": None, "hidden": 1}
+				continue
 			cells[(row.item_code, price_list)] = effective_price(
 				row.item_code, price_list, uom, row.stock_uom, factor, today
 			)
@@ -134,7 +143,7 @@ def get_items(
 				cell.update(last_changed=str(record.modified), last_changed_by=names[record.modified_by])
 				if not item["last_change"] or str(record.modified) > item["last_change"]["at"]:
 					item["last_change"] = {"at": str(record.modified), "by": names[record.modified_by]}
-			cell["duplicate"] = int((row.item_code, price_list) in duplicates)
+			cell["duplicate"] = int((row.item_code, price_list) in duplicates and not cell.get("hidden"))
 			cell.update(cell_access(row.item_code, price_list, cell, record, can_create))
 			if cell["duplicate"]:
 				item["warnings"].append(
@@ -228,6 +237,8 @@ def save_one(ctx, change, reason, confirm_large):
 	)
 	if not item or item.disabled or item.has_variants or not item.is_sales_item:
 		frappe.throw(_("{0} is not an enabled sales item.").format(change.item_code))
+	if family_refused(item.name, change.price_list):
+		frappe.throw(price_lists.family_message(item.name, change.price_list), price_lists.ItemFamilyError)
 	uom = change.uom or item.stock_uom
 	if uom != item.stock_uom and not frappe.db.exists(
 		"UOM Conversion Detail", {"parent": item.name, "parenttype": "Item", "uom": uom}
@@ -393,7 +404,10 @@ def user_permission_values(user, doctype, applies_to="Item Price"):
 
 
 def accessible_companies(user):
-	allowed = user_permission_values(user, "Company", applies_to=None)
+	if price_lists.split_active():
+		allowed = price_lists.allowed_companies(user)  # the desk's rule for prices
+	else:
+		allowed = user_permission_values(user, "Company", applies_to=None)
 	return [
 		c
 		for c in frappe.get_all("Company", pluck="name", order_by="name asc")
@@ -407,8 +421,10 @@ def default_company(companies):
 
 
 def selectable_lists(user):
-	"""Enabled selling price lists the user may see (Price List User Permissions)."""
+	"""Enabled selling price lists the user may see (Price List User Permissions; with the split, also not the lists
+	of companies the user may not see)."""
 	allowed = user_permission_values(user, "Price List")
+	companies = price_lists.allowed_companies(user) if price_lists.split_active() else None
 	return [
 		row
 		for row in frappe.get_all(
@@ -417,7 +433,8 @@ def selectable_lists(user):
 			fields=["name", "currency"],
 			order_by="name asc",
 		)
-		if allowed is None or row.name in allowed
+		if (allowed is None or row.name in allowed)
+		and (companies is None or price_lists.list_info(row.name).company in companies | {None})
 	]
 
 
@@ -497,7 +514,16 @@ def list_usage():
 
 def company_lists(company, usage):
 	"""The company's own lists: those its invoices used (most used first) and its POS Profiles', then the site's
-	default selling list (Selling Settings) when it is not among them."""
+	default selling list (Selling Settings) when it is not among them. With the split: the company's enabled selling
+	lists, its default list first (no Selling Settings fallback)."""
+	if price_lists.split_active():
+		default = price_lists.company_default_list(company)
+		own = sorted(
+			name
+			for name, info in price_lists.lists().items()
+			if info.company == company and info.enabled and info.selling
+		)
+		return ([default] if default in own else []) + [name for name in own if name != default]
 	used = usage.get(company, {})
 	lists = sorted(used, key=lambda name: (-used[name], name))
 	default = frappe.db.get_single_value("Selling Settings", "selling_price_list")
@@ -507,7 +533,11 @@ def company_lists(company, usage):
 
 
 def users_of(price_list, usage):
-	"""Companies that sell with `price_list` (invoices in LIST_USAGE_DAYS or an enabled POS Profile), by name."""
+	"""Companies that sell with `price_list` (invoices in LIST_USAGE_DAYS or an enabled POS Profile), by name. A list of
+	a company (price list split) is that company's only: never shared."""
+	owner = price_lists.list_info(price_list).company if price_lists.split_active() else None
+	if owner:
+		return [owner]
 	return sorted(company for company, lists in usage.items() if price_list in lists)
 
 
@@ -591,6 +621,24 @@ def other_sellers(ctx, codes):
 def clear_cache():
 	"""Forget cached list usage and company item sets (tests; after big data changes)."""
 	frappe.cache.delete_keys(f"{CACHE_PREFIX}:")
+
+
+def clear_caches():
+	"""For the price list split's data kit: the page's cached usage/items and this request's list facts."""
+	price_lists.clear_caches()
+
+
+def cell_visible(item_code, price_list):
+	"""Price list split: a restricted user sees a price of a list without a company only for their companies' items."""
+	return not price_lists.split_active() or price_lists.row_visible(frappe.session.user, price_list, item_code)
+
+
+def family_refused(item_code, price_list):
+	"""Price list split: the item is outside the item family of the company owning `price_list` (guard on)."""
+	if not price_lists.split_active() or not cint(frappe.conf.get(price_lists.GUARD_CONFIG, 1)):
+		return False
+	info = price_lists.list_info(price_list)
+	return bool(info and info.company and not price_lists.family_allows(item_code, info.company))
 
 
 # -- items and prices ---------------------------------------------------------------------------------------------------
@@ -718,6 +766,10 @@ def price_records(names):
 
 def cell_access(item_code, price_list, cell, record, can_create):
 	"""Editable state of one cell for the session user (UX; save_prices checks everything again)."""
+	if cell.get("hidden"):
+		return {"editable": 0, "lock_reason": _("You may not see this price.")}
+	if family_refused(item_code, price_list):
+		return {"editable": 0, "lock_reason": price_lists.family_message(item_code, price_list)}
 	if cell.get("duplicate"):
 		return {
 			"editable": 0,

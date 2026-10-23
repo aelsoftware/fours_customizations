@@ -53,6 +53,7 @@ from frappe.utils import flt, fmt_money, getdate, nowdate, today
 from fours_customizations.fours_customizations.doctype.four_s_industries_settings.four_s_industries_settings import (
 	get_settings,
 )
+from fours_customizations.price_lists import selling_list_for
 
 ROUNDING = 0.005
 
@@ -512,7 +513,8 @@ def _apply_common(target, si, reason):
 		target.custom_sales_person = primary_sales_person
 	target.currency = si.currency
 	target.conversion_rate = flt(si.conversion_rate) or 1.0
-	target.selling_price_list = si.selling_price_list
+	# the original's list unless it has been disabled (price list split): then the company's own list
+	target.selling_price_list = selling_list_for(si.selling_price_list, si.company, si.price_list_currency)
 	target.price_list_currency = si.price_list_currency
 	target.plc_conversion_rate = flt(si.plc_conversion_rate) or 1.0
 	target.cost_center = si.get("cost_center")

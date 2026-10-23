@@ -15,6 +15,7 @@ from frappe.permissions import add_permission, update_permission_property
 from frappe.tests import IntegrationTestCase
 from frappe.utils import add_days, flt, nowdate
 
+from fours_customizations import price_lists
 from fours_customizations.quick_price import api, setup
 
 PREFIX = "FQPT"
@@ -169,6 +170,9 @@ class TestQuickPriceUpdate(IntegrationTestCase):
 	def setUpClass(cls):
 		super().setUpClass()
 		frappe.set_user("Administrator")
+		if price_lists.has_company_field():  # a site after the price list split's data step: fe153b5's world for the class
+			frappe.db.sql(f"update `tabPrice List` set `{price_lists.FIELD}` = null")
+			price_lists.clear_caches()
 		for role in (READER_ROLE, WRITER_ROLE, TV_ROLE):
 			make_role(role)
 		make_company(CO_A, "FQTA")
@@ -362,6 +366,35 @@ class TestQuickPriceUpdate(IntegrationTestCase):
 			frappe.cache.hdel("user_permissions", READER)
 
 	# -- lists, shared notice --------------------------------------------------------------------------------------
+
+	def test_price_list_split_dark_and_active(self):
+		"""fe153b5 behaviour while no Price List has a company; with companies set the page shows each company's own
+		lists (no Selling Settings fallback, nothing 'shared') and hides other companies' lists from restricted users."""
+		self.assertFalse(price_lists.split_active())
+		self.assertIn(LIST_SHARED, api.company_lists(CO_B, api.list_usage()))
+		if not price_lists.has_company_field():
+			self.skipTest("Price List.custom_company (the split's data step) is not on this site")
+		frappe.db.set_value("Price List", LIST_OWN, price_lists.FIELD, CO_A, update_modified=False)
+		frappe.db.set_value("Price List", LIST_OTHER, price_lists.FIELD, CO_B, update_modified=False)
+		price_lists.clear_caches()
+		try:
+			usage = api.list_usage()
+			self.assertEqual(api.company_lists(CO_A, usage), [LIST_OWN])
+			self.assertEqual(api.company_lists(CO_B, usage), [LIST_OTHER])
+			self.assertEqual(api.company_lists(CO_C, usage), [])
+			self.assertEqual(api.users_of(LIST_OWN, usage), [CO_A])
+			names = {row.name for row in api.selectable_lists(LIMITED)}  # Company row: B only
+			self.assertIn(LIST_OTHER, names)
+			self.assertIn(LIST_SHARED, names)  # no company: everyone's
+			self.assertNotIn(LIST_OWN, names)
+			frappe.set_user(LIMITED)
+			data = api.get_items(CO_B, lists=[LIST_OWN, LIST_SHARED])
+			self.assertEqual([l["price_list"] for l in data["lists"]], [LIST_OTHER, LIST_SHARED])
+		finally:
+			frappe.set_user("Administrator")
+			for name in (LIST_OWN, LIST_OTHER):
+				frappe.db.set_value("Price List", name, price_lists.FIELD, None, update_modified=False)
+			price_lists.clear_caches()
 
 	def test_company_lists_and_added_list(self):
 		data = self.items(READER)

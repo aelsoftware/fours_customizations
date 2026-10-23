@@ -1,4 +1,5 @@
-"""fqp_check.py - checks for deploy_fqp.sh (fqp-1 Quick Price Update in fours_customizations, multax.kit.africa).
+"""fqp_check.py - checks for deploy_fqp.sh (ps-fours-2 price list split code release of fours_customizations on top of the
+fqp-1 Quick Price release, multax.kit.africa).
 
 Run by deploy_fqp.sh as the bench user from <bench>/sites with the bench's python:
     ../env/bin/python fqp_check.py <command> [options]
@@ -18,8 +19,10 @@ Commands
                                              re-added are removed, changed rows restored; count must equal --expect
   perms-compare --before F --after F         every Custom DocPerm row of every other role unchanged
   switches-compare --before F --after F      site_config and the kit_pos switches unchanged
-  smoke      --site S [--release]            release objects present and consistent (or absent with --pre)
-  rollback-cleanup --site S [--apply]        the release's Custom Role / Pricing workspace records left after rollback
+  smoke      --site S [--since T]            hooks loaded, Company default-list field, split rules hold per restricted
+                                             user (SQL = Python rule), consumers, page lists (or field absent with --pre)
+  rollback-cleanup --site S [--apply]        the release's Company custom field, removed only while every value is blank
+  page-roles --site S --baseline F [--apply] the Quick Price page's Custom Role roles back to those in F (facts)
   jobs       --site S                        background jobs running for the site (RQ started registries)
   assets     --out F;  assets-compare --before F --after F   other apps' built assets unchanged by the build
   syntax     --dir D;  jsoncheck --dir D
@@ -35,6 +38,20 @@ APP = "fours_customizations"
 PAGE = "quick-price-update"
 LOG_DOCTYPE = "Quick Price Change"
 WORKSPACE = "Pricing"
+COMPANY_FIELD = "Company-custom_default_selling_price_list"  # the only record this release adds (after_migrate)
+HOOKED = (  # (hook, doctype, event or None, method)
+	("has_permission", "Item Price", None, "fours_customizations.price_lists.item_price_has_permission"),
+	("permission_query_conditions", "Item Price", None, "fours_customizations.price_lists.item_price_query_conditions"),
+	("doc_events", "Item Price", "validate", "fours_customizations.price_lists.validate_item_price"),
+	("doc_events", "Item", "validate", "fours_customizations.price_lists.fill_item_default_price_lists"),
+	("doc_events", "Price List", "validate", "fours_customizations.price_lists.validate_price_list"),
+	("doc_events", "Price List", "before_rename", "fours_customizations.price_lists.before_rename_price_list"),
+	("doc_events", "Kit POS Location", "validate", "fours_customizations.price_lists.validate_consumer_list"),
+	("doc_events", "POS Profile", "validate", "fours_customizations.price_lists.validate_consumer_list"),
+	("doc_events", "Customer", "validate", "fours_customizations.price_lists.validate_party_default_list"),
+	("doc_events", "Sales Invoice", "before_validate", "fours_customizations.price_lists.replace_disabled_selling_list"),
+	("doc_events", "POS Invoice", "before_validate", "fours_customizations.price_lists.replace_disabled_selling_list"),
+)
 VOX = "Vox Accountant"
 RIGHTS = (
 	"read",
@@ -329,16 +346,22 @@ def cmd_facts(a):
 		out(f"  Item Price write/create: {', '.join(w)}")
 		rel = facts["release"]
 		out(
-			f"  release objects: DocType {rel['doctype']}, Page {rel['page']}, Workspace {rel['workspace']}, "
+			f"  fqp-1 objects: DocType {rel['doctype']}, Page {rel['page']}, Workspace {rel['workspace']}, "
 			f"Custom Role roles {rel['custom_role_roles']}, {LOG_DOCTYPE} rows {rel['log_rows']}"
+		)
+		out(
+			f"  ps-fours-2: Company field {rel['company_field']}; Phase 1 Price List.custom_company field "
+			f"{rel['price_list_company_field']}"
 		)
 		if a.expect_vox is not None and len(vox) != a.expect_vox:
 			raise GateFail(
 				f"Vox Accountant Custom DocPerm rows are {len(vox)}, not the expected {a.expect_vox}: the "
 				"baseline changed since 2026-10-22 - the lead decides before any migrate"
 			)
-		if a.expect == "pre" and (rel["doctype"] or rel["page"]):
-			raise GateFail("release objects already exist on the site: not the pre-release baseline")
+		if a.expect == "pre" and rel["company_field"]:
+			raise GateFail(f"Custom Field {COMPANY_FIELD} already exists: not the pre-release baseline")
+		if a.expect == "pre" and not (rel["doctype"] and rel["page"]):
+			raise GateFail("the fqp-1 Quick Price objects are missing: the baseline fe153b5 is not what the site runs")
 	finally:
 		close()
 
@@ -371,6 +394,8 @@ def release_objects(frappe):
 		"log_rows": frappe.db.sql(f"select count(*) from `tab{LOG_DOCTYPE}`")[0][0]
 		if frappe.db.table_exists(LOG_DOCTYPE)
 		else None,  # raw: the DocType may be gone (rollback)
+		"company_field": bool(exists("Custom Field", COMPANY_FIELD)),
+		"price_list_company_field": bool(exists("Custom Field", "Price List-custom_company")),
 	}
 
 
@@ -533,59 +558,30 @@ def cmd_smoke(a):
 		rel = release_objects(frappe)
 		problems = []
 		if a.pre:
-			if rel["doctype"] or rel["page"] or rel["workspace"] or rel["custom_role"]:
-				problems.append(f"release objects present after rollback: {rel}")
+			hooks = {n: frappe.get_hooks(n) or {} for n in ("has_permission", "permission_query_conditions", "doc_events")}
+			loaded = [
+				m
+				for hook, doctype, event, m in HOOKED
+				if m in str(hooks[hook].get(doctype, {}).get(event, []) if event else hooks[hook].get(doctype, []))
+			]
+			if loaded:
+				problems.append(f"price_lists hooks still loaded after rollback: {len(loaded)}")
+			out(f"  price_lists hooks loaded: {len(loaded)}; Custom Field {COMPANY_FIELD}: {rel['company_field']}")
 		else:
-			from fours_customizations.quick_price import api
-
-			for key in ("doctype", "page", "workspace"):
-				if not rel[key]:
-					problems.append(f"{key} missing")
-			expected = sorted(r for r in api.page_roles() if frappe.db.exists("Role", r))
-			if rel["custom_role_roles"] != expected:
-				problems.append(
-					f"Custom Role roles {rel['custom_role_roles']} != Item Price read roles {expected}"
-				)
-			for hook, value in (("ignore_links_on_delete", LOG_DOCTYPE),):
-				if value not in frappe.get_hooks(hook):
-					problems.append(f"hook {hook} lacks {value}")
-			if "Item Price" not in (frappe.get_hooks("doctype_list_js") or {}):
-				problems.append("Item Price list script not hooked")
-			frappe.set_user("Administrator")
-			ctx = api.get_context()
-			out(
-				f"  get_context (Administrator): {len(ctx['companies'])} companies; {len(ctx['selling_lists'])} "
-				"enabled selling lists"
-			)
-			for company in ctx["companies"]:
-				data = api.get_items(company, page_length=5)
-				lists = ", ".join(f"{l['price_list']} (used by {len(l['used_by'])})" for l in data["lists"])
-				out(f"    {company}: lists {lists}; first page {len(data['items'])} items")
-			log_rows = rel["log_rows"]
-			out(f"  {LOG_DOCTYPE} rows {log_rows}; page roles {', '.join(expected)}")
-			writers = sorted(
-				{
-					r.role
-					for r in frappe.get_all(
-						"Custom DocPerm",
-						filters={"parent": "Item Price", "permlevel": 0},
-						fields=["role", "write", "create"],
-					)
-					if r.write or r.create
-				}
-			)
-			out(f"  Item Price write/create roles (unchanged by this release): {', '.join(writers) or '-'}")
+			problems += _smoke_release(frappe, rel)
 			errors = (
 				frappe.get_all(
-					"Error Log", filters={"creation": [">=", get_datetime(a.since)]}, pluck="method"
+					"Error Log", filters={"creation": [">=", get_datetime(a.since)]}, fields=["method", "error"]
 				)
 				if a.since
 				else []
 			)
-			mine = [e for e in errors if "quick price" in (e or "").lower() or APP in (e or "")]
-			out(
-				f"  Error Log since {a.since or '-'}: {len(errors)} rows, {len(mine)} mention Quick Price / {APP}"
-			)
+			mine = [
+				e
+				for e in errors
+				if any(k in f"{e.method} {e.error}".lower() for k in ("price_lists", "quick price", "quick_price"))
+			]
+			out(f"  Error Log since {a.since or '-'}: {len(errors)} rows, {len(mine)} mention price_lists / Quick Price")
 			if mine:
 				problems.append(f"{len(mine)} Error Log rows of this release")
 		if problems:
@@ -597,41 +593,174 @@ def cmd_smoke(a):
 		close()
 
 
+def _user_hash(user):
+	return hashlib.sha1(user.encode()).hexdigest()[:8]
+
+
+def _smoke_release(frappe, rel):
+	"""Read-only: the hooks load, the Company field is there, and with the split active the Item Price rule holds for
+	every enabled restricted user who reads prices (the permission query gives no row the Python rule refuses - other
+	User Permissions, e.g. Price List rows, may hide more - and none of another company's list or of a disabled list),
+	consumers use lists they may, and the page lists per company."""
+	from fours_customizations import price_lists
+	from fours_customizations.quick_price import api
+
+	problems = []
+	hooks = {name: frappe.get_hooks(name) or {} for name in ("has_permission", "permission_query_conditions", "doc_events")}
+	for hook, doctype, event, method in HOOKED:
+		got = hooks[hook].get(doctype, {})
+		got = got.get(event, []) if event else got
+		if method not in (got if isinstance(got, list) else [got]):
+			problems.append(f"hook {hook} {doctype} {event or ''} lacks {method}")
+	out(f"  hooks: {len(HOOKED) - len(problems)}/{len(HOOKED)} price_lists hooks loaded")
+	if not rel["company_field"]:
+		problems.append(f"Custom Field {COMPANY_FIELD} missing (after_migrate did not run?)")
+	elif not frappe.db.get_value("Custom Field", COMPANY_FIELD, "ignore_user_permissions"):
+		problems.append(f"Custom Field {COMPANY_FIELD} must ignore user permissions")
+	price_lists.clear_caches()
+	active = price_lists.split_active()
+	lists = price_lists.lists()
+	out(f"  split active: {active}")
+	counts = dict(frappe.db.sql("select price_list, count(*) from `tabItem Price` group by price_list"))
+	for name, info in sorted(lists.items()):
+		default_of = [c for c in frappe.get_all("Company", pluck="name") if price_lists.company_default_list(c) == name]
+		out(
+			f"    {name}: company {info.company or '-'}, enabled {info.enabled}, selling {info.selling}, buying "
+			f"{info.buying}, {info.currency}, {counts.get(name, 0)} prices"
+			+ (f", default of {', '.join(default_of)}" if default_of else "")
+		)
+	if not active:
+		out("  the split is not active (no Price List has a company): every rule is off, behaviour = fe153b5")
+		return problems
+
+	# the rule per restricted user: SQL (permission query) = Python (has_permission) on every Item Price row
+	rows = frappe.get_all("Item Price", fields=["name", "price_list", "item_code"], limit_page_length=0)
+	read_roles = set(api.price_read_roles())
+	users = frappe.get_all("User", filters={"enabled": 1, "user_type": "System User"}, pluck="name")
+	checked = 0
+	for user in sorted(users):
+		if user == "Administrator" or not (set(frappe.get_roles(user)) & read_roles):
+			continue
+		allowed = price_lists.allowed_companies(user)
+		if allowed is None:
+			out(f"    user {_user_hash(user)}: unrestricted (no Company row for prices)")
+			continue
+		expected = {r.name for r in rows if price_lists.row_visible(user, r.price_list, r.item_code)}
+		got = set(
+			frappe.get_list("Item Price", fields=["name"], user=user, limit_page_length=0, pluck="name")
+		)
+		foreign = {
+			r.name
+			for r in rows
+			if r.name in got
+			and (
+				not lists.get(r.price_list)
+				or not lists[r.price_list].enabled
+				or (lists[r.price_list].company and lists[r.price_list].company not in allowed)
+			)
+		}
+		checked += 1
+		out(
+			f"    user {_user_hash(user)} ({', '.join(sorted(allowed))}): sees {len(got)} of {len(rows)} prices; "
+			f"rule allows {len(expected)} (hidden by other User Permissions {len(expected - got)}); "
+			f"other-company/disabled {len(foreign)}"
+		)
+		if got - expected or foreign:
+			problems.append(f"user {_user_hash(user)}: permission query differs from the rule or leaks")
+	out(f"  restricted price readers checked: {checked}")
+
+	# item families of the company lists (the guard refuses new ones; existing ones are reported)
+	for name, info in sorted(lists.items()):
+		if info.company and info.company in price_lists.families():
+			off = [
+				r.item_code
+				for r in rows
+				if r.price_list == name and not price_lists.family_allows(r.item_code, info.company)
+			]
+			out(f"    {name}: {len(off)} prices outside {info.company}'s item family" + (f" (e.g. {off[0]})" if off else ""))
+
+	# consumers: active Kit POS Locations / enabled POS Profiles on an enabled list of their company or of none
+	consumers = frappe.get_all("POS Profile", filters={"disabled": 0}, fields=["name", "company", "selling_price_list"])
+	if frappe.db.table_exists("Kit POS Location"):
+		consumers += frappe.get_all(
+			"Kit POS Location", filters={"active": 1}, fields=["name", "company", "selling_price_list"]
+		)
+	bad = [
+		c.name
+		for c in consumers
+		if c.selling_price_list
+		and (
+			not lists.get(c.selling_price_list)
+			or not lists[c.selling_price_list].enabled
+			or (lists[c.selling_price_list].company or c.company) != c.company
+		)
+	]
+	out(f"  consumers (enabled POS Profiles + active Kit POS Locations): {len(consumers)}, off-rule {len(bad)}")
+	if bad:
+		problems.append(f"consumers on a disabled list or another company's list: {', '.join(bad)}")
+
+	# the Quick Price page per company (Administrator)
+	frappe.set_user("Administrator")
+	usage = api.list_usage()
+	for company in frappe.get_all("Company", pluck="name", order_by="name"):
+		out(f"    page lists of {company}: {', '.join(api.company_lists(company, usage)) or '-'}")
+	return problems
+
+
 def cmd_rollback_cleanup(a):
+	"""The code is back at fe153b5: remove the release's Company custom field, but only while no company has a value (the
+	data step's own rollback, ps2.py, clears them first; otherwise the values would be lost)."""
 	frappe = connect(a.site)
 	try:
-		rel = release_objects(frappe)
+		exists = frappe.db.exists("Custom Field", COMPANY_FIELD)
+		values = (
+			frappe.get_all(
+				"Company",
+				filters={"custom_default_selling_price_list": ["is", "set"]},
+				fields=["name", "custom_default_selling_price_list"],
+			)
+			if exists
+			else []
+		)
+		out(f"  left after rollback: Custom Field {COMPANY_FIELD} {bool(exists)}; companies with a value {len(values)}")
+		if values:
+			for v in values:
+				out(f"    {v.name}: {v.custom_default_selling_price_list}")
+			out(
+				"  WARN: Company default lists are set (the data step ran): the field stays. Run 'ps2.py rollback', then"
+				" 'fqp_check.py rollback-cleanup --apply' to remove it (fe153b5 ignores the field)."
+			)
+			return
+		if a.apply and exists:
+			frappe.delete_doc("Custom Field", COMPANY_FIELD, ignore_permissions=True, force=True)
+			frappe.db.commit()
+			frappe.clear_cache(doctype="Company")
+			out(f"  removed Custom Field {COMPANY_FIELD}")
+	finally:
+		close()
+
+
+def cmd_page_roles(a):
+	"""fours' after_migrate (quick_price.setup.sync_access) rewrites the page's Custom Role on every migrate; the deploy keeps
+	the roles the page had before it (Phase 1 paused the page: System Manager only), ps2.py resumes it."""
+	base = load(a.baseline)["release"]
+	frappe = connect(a.site)
+	try:
 		role = frappe.db.get_value("Custom Role", {"page": PAGE}, "name")
-		left = {
-			"custom_role": role,
-			"workspace": frappe.db.exists("Workspace", WORKSPACE),
-			"workspace_sidebar": frappe.db.exists("Workspace Sidebar", WORKSPACE)
-			if frappe.db.table_exists("Workspace Sidebar")
-			else None,
-			"desktop_icon": frappe.db.exists("Desktop Icon", WORKSPACE)
-			if frappe.db.table_exists("Desktop Icon")
-			else None,
-			"page": rel["page"],
-			"doctype": rel["doctype"],
-			"log_rows": rel["log_rows"],
-		}
-		out(f"  left after rollback: {left}")
+		now = sorted(frappe.get_all("Has Role", filters={"parenttype": "Custom Role", "parent": role}, pluck="role")) if role else []
+		want = sorted(base.get("custom_role_roles") or [])
+		out(f"  page roles before the deploy: {', '.join(want) or '-'}; now: {', '.join(now) or '-'}")
+		if not role or not want or now == want:
+			return
 		if a.apply:
-			if role:
-				frappe.delete_doc("Custom Role", role, ignore_permissions=True, force=True)
-			for dt in ("Desktop Icon", "Workspace Sidebar", "Workspace"):
-				if (
-					frappe.db.table_exists(dt)
-					and frappe.db.exists(dt, WORKSPACE)
-					and frappe.db.get_value(dt, WORKSPACE, "app" if dt != "Workspace" else "module")
-					in (APP, "Fours Customizations")
-				):
-					frappe.delete_doc(dt, WORKSPACE, ignore_permissions=True, force=True)
+			doc = frappe.get_doc("Custom Role", role)
+			doc.set("roles", [{"role": r} for r in want])
+			doc.save(ignore_permissions=True)
 			frappe.db.commit()
 			frappe.clear_cache()
-			out(
-				"  removed the release's Custom Role / Pricing records (the Quick Price Change table and rows stay)"
-			)
+			out(f"  page roles -> {', '.join(want)}")
+		else:
+			raise GateFail("page roles differ from the baseline")
 	finally:
 		close()
 
@@ -786,6 +915,10 @@ def main():
 	s.add_argument("--since")
 	s = sub.add_parser("rollback-cleanup")
 	s.add_argument("--site", required=True)
+	s.add_argument("--apply", action="store_true")
+	s = sub.add_parser("page-roles")
+	s.add_argument("--site", required=True)
+	s.add_argument("--baseline", required=True)
 	s.add_argument("--apply", action="store_true")
 	s = sub.add_parser("jobs")
 	s.add_argument("--site", required=True)

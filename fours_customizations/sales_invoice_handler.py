@@ -24,6 +24,7 @@ from frappe.utils import flt, fmt_money
 from fours_customizations.fours_customizations.doctype.four_s_industries_settings.four_s_industries_settings import (
         get_setting,
 )
+from fours_customizations.price_lists import selling_list_for
 
 FOUR_S_COMPANY = "4S Industries Limited"
 
@@ -510,7 +511,10 @@ def _create_draft_delivery_note_return(doc, stock_item_codes):
                 dn_return.set_posting_time = 1
                 dn_return.currency = original_dn.currency
                 dn_return.conversion_rate = original_dn.conversion_rate
-                dn_return.selling_price_list = original_dn.selling_price_list
+                # the original's list unless it has been disabled (price list split): then the company's own list
+                dn_return.selling_price_list = selling_list_for(
+                        original_dn.selling_price_list, original_dn.company, original_dn.price_list_currency
+                )
                 dn_return.price_list_currency = original_dn.price_list_currency
                 dn_return.plc_conversion_rate = original_dn.plc_conversion_rate
                 dn_return.ignore_pricing_rule = 1
