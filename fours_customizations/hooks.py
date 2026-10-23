@@ -7,6 +7,11 @@ app_license = "mit"
 
 required_apps = ["kit_pos"]
 
+# Kit Attend (kit_attend app): keep this site's attendance self-healing when a punch is re-sent, and send punches
+# without In/Out as IN (this site's rules were built on all-IN punches).
+kit_attend_on_duplicate = ["fours_customizations.checkin_handler.update_attendance_from_checkin"]
+kit_attend_unlabelled_as = "in"
+
 # Apps
 # ------------------
 
