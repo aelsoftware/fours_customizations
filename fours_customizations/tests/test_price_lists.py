@@ -4,7 +4,8 @@
 
 Needs a multax-shaped lab site (companies '4S Industries Limited', 'Vox Lounge', 'Vox Lounge Nansana', Item Groups
 '4S Items', 'Vox Items', 'Raw Kitchen Items'); never production. The Custom Field Price List.custom_company is the data
-step's: when the site lacks it, setUpClass creates it first (DDL, committed: the only thing that outlives the test).
+step's, Company.custom_default_selling_price_list the release's (after_migrate): when the site lacks them, setUpClass
+creates them first (DDL, committed: the only things that outlive the test).
 Everything else is the test's own and lives inside the test transaction (IntegrationTestCase rolls the class back).
 """
 
@@ -170,6 +171,12 @@ class TestPriceLists(IntegrationTestCase):
 					"in_standard_filter": 1,
 				},
 			)
+			frappe.db.commit()
+		if not frappe.get_meta("Company").has_field(price_lists.DEFAULT_FIELD):
+			# the release's own field (after_migrate): missing when the tree was copied over without a migrate
+			from fours_customizations.install import create_company_custom_fields
+
+			create_company_custom_fields()
 			frappe.db.commit()
 		super().setUpClass()
 		frappe.set_user("Administrator")
