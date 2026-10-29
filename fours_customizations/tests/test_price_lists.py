@@ -753,6 +753,25 @@ class TestPriceLists(IntegrationTestCase):
 		self.assertEqual(rate(I_4S, L_USD), before[(I_4S, L_USD)])
 		self.assertEqual(rate(I_4S, L_OLD), before[(I_4S, L_OLD)])
 
+	def test_landed_cost_carton_price(self):
+		# SWEEP #165: the new selling price is per stock unit; a carton row gets it times the carton's factor
+		as_user("Administrator")
+		code = f"{P}-ITEM-{frappe.generate_hash(length=6).upper()}"
+		make_item(code, leaf_group("Vox Items"), uoms=[{"uom": "Nos", "conversion_factor": 1}, {"uom": "Box", "conversion_factor": 12}])
+		make_price(code, L_VXM, 1000)
+		box = frappe.get_doc(
+			{"doctype": "Item Price", "item_code": code, "price_list": L_VXM, "price_list_rate": 12000, "uom": "Box"}
+		).insert(ignore_permissions=True)
+		landed_cost_handler.on_submit(
+			SimpleNamespace(name="PST-LCV-3", company=CO_VXM, items=[SimpleNamespace(item_code=code, new_selling_price=1100)])
+		)
+		rates = {
+			r.uom: flt(r.price_list_rate)
+			for r in frappe.get_all("Item Price", filters={"item_code": code}, fields=["uom", "price_list_rate"])
+		}
+		self.assertEqual(rates, {"Nos": 1100, "Box": 13200})
+		self.assertEqual(box.name, frappe.db.get_value("Item Price", {"item_code": code, "uom": "Box"}))
+
 	# -- Quick Price page -----------------------------------------------------------------------------------------------
 
 	def test_quick_price_lists_per_company(self):

@@ -12,6 +12,9 @@ no price list is found there.
 Price list split (price_lists.py): once lists belong to companies, only the
 item's prices in enabled selling lists of the voucher's company, in the
 company currency, change; a missing price goes to the company's default list.
+
+The new selling price is per stock unit: an Item Price in another UOM (a carton) is set to it times that UOM's
+conversion factor, and a created price carries the stock UOM.
 """
 
 from __future__ import annotations
@@ -57,11 +60,15 @@ def on_submit(doc, method=None) -> None:
 def _sync_item_price(
 	item_code: str, new_price: float, default_list: str | None, scope: list[str] | None = None
 ) -> int:
-	"""Update every selling Item Price for `item_code` (only in the `scope` lists when given). Creates one if none exist."""
+	"""Update every selling Item Price for `item_code` (only in the `scope` lists when given). Creates one if none exist.
+
+	`new_price` is a stock-UOM price: a row in another UOM (a carton) gets it times that UOM's conversion factor, the
+	way ERPNext derives it, and a row in a UOM the item has no factor for is left alone."""
 	filters = {"item_code": item_code, "selling": 1}
 	if scope is not None:
 		filters["price_list"] = ["in", scope or [""]]
-	prices = frappe.get_all("Item Price", filters=filters, fields=["name", "price_list"])
+	prices = frappe.get_all("Item Price", filters=filters, fields=["name", "price_list", "uom"])
+	stock_uom = frappe.db.get_value("Item", item_code, "stock_uom")
 
 	if not prices and default_list:
 		if price_lists.automatic_price_refused(default_list, item_code):
@@ -70,14 +77,26 @@ def _sync_item_price(
 		ip.item_code = item_code
 		ip.price_list = default_list
 		ip.selling = 1
+		ip.uom = stock_uom
 		ip.price_list_rate = new_price
 		ip.valid_from = nowdate()
 		ip.flags.ignore_permissions = True
 		ip.insert(ignore_permissions=True)
 		return 1
 
+	factors = {
+		row.uom: flt(row.conversion_factor)
+		for row in frappe.get_all(
+			"UOM Conversion Detail",
+			filters={"parenttype": "Item", "parent": item_code},
+			fields=["uom", "conversion_factor"],
+		)
+	}
 	count = 0
 	for p in prices:
-		frappe.db.set_value("Item Price", p.name, "price_list_rate", new_price)
+		factor = 1.0 if not p.uom or p.uom == stock_uom else factors.get(p.uom)
+		if not factor:
+			continue
+		frappe.db.set_value("Item Price", p.name, "price_list_rate", new_price * factor)
 		count += 1
 	return count
