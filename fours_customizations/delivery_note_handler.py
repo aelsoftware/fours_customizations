@@ -556,6 +556,9 @@ def _cancel_sales_order_chain(so_name: str, deleted_dn: str, cancel_payments: bo
 	# ── c. Sales Order ────────────────────────────────────────────────────────
 	# Allow cancel even if commission JEs or other links exist
 	so.flags.ignore_links = True
+	# sales_order_handler.on_cancel cancels the order's receipts unless told
+	# otherwise: the payments decision above is this chain's to make.
+	so.flags.keep_payment_entries = not cancel_payments
 	so.cancel()
 	frappe.msgprint(
 		f"Sales Order {so_name} cancelled — it can now be amended.",

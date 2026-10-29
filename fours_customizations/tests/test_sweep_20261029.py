@@ -312,10 +312,11 @@ class FakeSite:
 	def sql(self, query, values=None, as_dict=False, **_kw):
 		if self.sqlite is None:
 			raise AssertionError(f"Unexpected SQL: {query}")
-		query = re.sub(r"%\((\w+)\)s", r":\1", query)
-		params = {k: (str(v) if isinstance(v, date) else v) for k, v in (values or {}).items()}
 		if isinstance(values, (list, tuple)):
 			query, params = query.replace("%s", "?"), [str(v) if isinstance(v, date) else v for v in values]
+		else:
+			query = re.sub(r"%\((\w+)\)s", r":\1", query)
+			params = {k: (str(v) if isinstance(v, date) else v) for k, v in (values or {}).items()}
 		cur = self.sqlite.execute(query, params)
 		rows = cur.fetchall()
 		if as_dict:
@@ -851,3 +852,38 @@ class TestSweep193ReconcileItemsPermission(SweepCase):
 	def test_permitted_user_gets_the_draft(self):
 		self.assertTrue(self.mod.reconcile_items(["X"]))
 		self.assertEqual(len(self.site.rows("Stock Reconciliation")), 1)
+
+
+class TestSweep258KeepPaymentOnDraftDelete(SweepCase):
+	"""#258: deleting a draft Delivery Note cancels the Sales Order but leaves its Payment Entries standing."""
+
+	def setUp(self):
+		super().setUp()
+		price_lists = stub("fours_customizations.price_lists", selling_list_for=lambda *a: None)
+		self.so_handler = self.load(
+			"sales_order_handler.py", {**erpnext_stubs(), "fours_customizations.price_lists": price_lists}
+		)
+		self.dn_handler = self.load("delivery_note_handler.py")
+		self.site.hooks[("Sales Order", "on_cancel")] = [self.so_handler.on_cancel]
+		self.sqlite(
+			"CREATE TABLE `tabSales Invoice Item` (sales_order TEXT, so_detail TEXT)",
+			"CREATE TABLE `tabDelivery Note Item` (against_sales_order TEXT, so_detail TEXT)",
+		)
+		self.site.add("Company", name="4S", enable_selling_automations=1)
+		self.site.add("Sales Order", name="SO-1", docstatus=1, customer="C", company="4S")
+		self.site.add("Payment Entry", name="PE-1", docstatus=1, reference_no="SO-1", party_type="Customer", party="C",
+		              payment_type="Receive", company="4S")
+
+	def test_draft_delete_keeps_the_receipt(self):
+		self.dn_handler._cancel_sales_order_chain("SO-1", deleted_dn="DN-1", cancel_payments=False)
+		self.assertEqual(self.cancelled("Sales Order"), ["SO-1"])
+		self.assertEqual(self.cancelled("Payment Entry"), [])
+		self.assertFalse([m for m in self.site.messages if "PE-1 cancelled" in m])
+
+	def test_teardown_that_cancels_payments_still_does(self):
+		self.dn_handler._cancel_sales_order_chain("SO-1", deleted_dn="")
+		self.assertEqual(self.cancelled("Payment Entry"), ["PE-1"])
+
+	def test_plain_sales_order_cancel_still_cancels_its_receipts(self):
+		self.site.get_doc("Sales Order", "SO-1").cancel()
+		self.assertEqual(self.cancelled("Payment Entry"), ["PE-1"])

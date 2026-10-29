@@ -13,7 +13,9 @@ Hooks fired on Sales Order:
       (accounting for change) and creates one submitted Payment Entry per row.
 
   on_cancel
-    • Cancels every Payment Entry that was created from this Sales Order.
+    • Cancels every Payment Entry that was created from this Sales Order —
+      except when the Delivery Note teardown keeps them
+      (flags.keep_payment_entries: a deleted draft note, the money stays).
 """
 
 import frappe
@@ -223,6 +225,11 @@ def on_cancel(doc, method=None):
 	# Strip native links to this cancelled order from the invoice/DN items first,
 	# so an amend of those documents never re-links a cancelled Sales Order.
 	_unlink_so_from_billing_and_delivery(doc.name)
+
+	if doc.flags.get("keep_payment_entries"):
+		# Draft Delivery Note deleted (delivery_note_handler): the paperwork is
+		# being redone, the customer's money stays as an advance.
+		return
 
 	pes = frappe.get_all(
 		"Payment Entry",
