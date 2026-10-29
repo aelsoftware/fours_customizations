@@ -75,6 +75,11 @@ def add_checkin(
 	if log_type not in ("IN", "OUT"):
 		frappe.throw(_("'log_type' must be IN or OUT."))
 
+	# The punch is the caller's own Employee Checkin (as in hrms'
+	# add_log_based_on_employee_field): role permission first, then the
+	# document check, which applies Employee / Company User Permissions.
+	frappe.has_permission("Employee Checkin", "create", throw=True)
+
 	employee = _resolve_employee(employee_field_value, employee_fieldname)
 	if not employee:
 		# Device user with no Employee record — acknowledge so the
@@ -82,6 +87,12 @@ def add_checkin(
 		return {"status": "unknown_employee", "employee_field_value": employee_field_value}
 
 	time = get_datetime(timestamp)
+	checkin = frappe.new_doc("Employee Checkin")
+	checkin.employee = employee
+	checkin.time = time
+	checkin.log_type = log_type
+	checkin.device_id = device_id
+	checkin.check_permission("create")
 
 	# Idempotency: same employee + same instant ⇒ same punch (mirrors the
 	# duplicate-log validation in hrms, which would otherwise throw).
@@ -104,12 +115,6 @@ def add_checkin(
 			"employee": employee,
 		}
 
-	checkin = frappe.new_doc("Employee Checkin")
-	checkin.employee = employee
-	checkin.time = time
-	checkin.log_type = log_type
-	checkin.device_id = device_id
-	checkin.flags.ignore_permissions = True
 	checkin.insert()  # update_attendance_from_checkin runs on after_insert
 
 	return {

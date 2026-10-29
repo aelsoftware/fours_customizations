@@ -483,3 +483,43 @@ class TestSweep173AutoCancelAuthz(SweepCase):
 		self.assertIn("automatically cancelled", self.mod._try_auto_cancel_invoice("SI-4S-1", "wrong customer")["message"])
 		self.perform.assert_called_once()
 		self.assertIn(("Sales Invoice", "read", "SI-4S-1"), seen)
+
+
+class TestSweep174CheckinPermission(SweepCase):
+	"""#174: add_checkin is the caller's own Employee Checkin insert, permission-checked (no ignore_permissions)."""
+
+	def setUp(self):
+		super().setUp()
+		settings = stub(SETTINGS_MODULE, get_settings=lambda: _dict())
+		self.mod = self.load("checkin_handler.py", {SETTINGS_MODULE: settings})
+		self.site.add("Employee", name="HR-EMP-4S", company="4S Industries Limited")
+		self.site.add("Employee", name="HR-EMP-VOX", company="Vox Lounge Nansana")
+
+	def punch(self, employee="HR-EMP-4S", at="2026-10-28 09:00:00"):
+		return self.mod.add_checkin(employee_field_value=employee, timestamp=at, log_type="IN")
+
+	def test_user_without_checkin_create_is_refused(self):
+		self.site.permit = lambda doctype, ptype, doc, user: doctype != "Employee Checkin"
+		with self.assertRaises(PermissionError):
+			self.punch()
+		self.assertEqual(self.site.rows("Employee Checkin"), [])
+
+	def test_other_company_employee_is_refused(self):
+		# User Permission on Company: the document-level check refuses the other company's employee
+		self.site.permit = lambda doctype, ptype, doc, user: doc is None or doc.employee == "HR-EMP-4S"
+		with self.assertRaises(PermissionError):
+			self.punch("HR-EMP-VOX")
+		self.assertEqual(self.site.rows("Employee Checkin"), [])
+		self.assertEqual(self.punch()["status"], "created")
+
+	def test_duplicate_of_other_company_punch_is_refused(self):
+		self.site.add("Employee Checkin", name="CHK-1", employee="HR-EMP-VOX", time=datetime(2026, 10, 28, 9))
+		self.site.permit = lambda doctype, ptype, doc, user: doc is None or doc.employee == "HR-EMP-4S"
+		with self.assertRaises(PermissionError):
+			self.punch("HR-EMP-VOX")
+
+	def test_permitted_insert_is_not_elevated(self):
+		self.assertEqual(self.punch()["status"], "created")
+		inserts = [entry for entry in self.site.log if entry[:2] == ("insert", "Employee Checkin")]
+		self.assertEqual(len(inserts), 1)
+		self.assertFalse(inserts[0][3], "the device punch insert must not run with ignore_permissions")
