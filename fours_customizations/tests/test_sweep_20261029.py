@@ -523,3 +523,14 @@ class TestSweep174CheckinPermission(SweepCase):
 		inserts = [entry for entry in self.site.log if entry[:2] == ("insert", "Employee Checkin")]
 		self.assertEqual(len(inserts), 1)
 		self.assertFalse(inserts[0][3], "the device punch insert must not run with ignore_permissions")
+
+
+class TestSweep180AttendanceLock(SweepCase):
+	"""#180 (minor): the day's Attendance is read FOR UPDATE, so concurrent punches serialize their compare-and-write."""
+
+	def test_attendance_loaded_for_update(self):
+		settings = stub(SETTINGS_MODULE, get_settings=lambda: _dict())
+		mod = self.load("checkin_handler.py", {SETTINGS_MODULE: settings})
+		self.site.add("Attendance", name="ATT-1", employee="E1", attendance_date=date(2026, 10, 28), docstatus=1)
+		self.assertEqual(mod._find_attendance("E1", date(2026, 10, 28), None).name, "ATT-1")
+		self.assertIn(("get_doc", "Attendance", "ATT-1", True), self.site.log)

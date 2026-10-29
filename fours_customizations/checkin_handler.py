@@ -197,7 +197,9 @@ def _find_attendance(employee, day, shift):
 	if not name:
 		# also match attendance created without a shift (e.g. the nightly job)
 		name = frappe.db.get_value("Attendance", filters)
-	return frappe.get_doc("Attendance", name) if name else None
+	# Locked: concurrent punches for the day serialize their compare-and-write
+	# (an earlier OUT must never overwrite a later one).
+	return frappe.get_doc("Attendance", name, for_update=True) if name else None
 
 
 def _create_attendance(employee, day, shift):
