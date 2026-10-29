@@ -629,6 +629,9 @@ def relink_delivery_note(delivery_note: str, sales_invoice: str) -> dict:
 	"""
 	dn = frappe.get_doc("Delivery Note", delivery_note)
 	si = frappe.get_doc("Sales Invoice", sales_invoice)
+	# Role and company User Permissions of the caller, before any write.
+	dn.check_permission("write")
+	si.check_permission("read")
 
 	if dn.docstatus != 1:
 		frappe.throw(_("Delivery Note {0} is not submitted.").format(delivery_note))

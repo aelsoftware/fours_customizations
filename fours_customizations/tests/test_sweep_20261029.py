@@ -661,3 +661,31 @@ class TestSweep253AmendedInvoiceGuard(ChainCase):
 		self.site.add("Sales Invoice", name="SI-1-1", docstatus=1, amended_from="SI-1")
 		self.note("DN-A", [("X", 5)], invoice="SI-1")
 		self.assertEqual(self.mod.submitted_delivery_notes_for_invoice("SI-1-1"), ["DN-A"])
+
+
+class TestSweep247RelinkPermission(ChainCase):
+	"""#247 (minor): the relink repair writes only for a user who may write the note and read the invoice."""
+
+	def setUp(self):
+		super().setUp()
+		self.site.add("Delivery Note", name="DN-A", docstatus=1, customer="C", company="Vox Lounge",
+		              items=[_dict(name="DNI-1", item_code="X", against_sales_invoice="SI-1", si_detail="SII-OLD")])
+		self.site.add("Delivery Note Item", name="DNI-1", parent="DN-A", item_code="X", against_sales_invoice="SI-1")
+		self.site.add("Sales Invoice", name="SI-1", docstatus=2, customer="C", company="Vox Lounge")
+		self.site.add("Sales Invoice", name="SI-1-1", docstatus=1, customer="C", company="Vox Lounge", amended_from="SI-1")
+		self.site.add("Sales Invoice Item", name="SII-NEW", parent="SI-1-1", item_code="X")
+
+	def test_user_without_write_on_note_is_refused(self):
+		self.site.permit = lambda doctype, ptype, doc, user: not (doctype == "Delivery Note" and ptype == "write")
+		with self.assertRaises(PermissionError):
+			self.mod.relink_delivery_note("DN-A", "SI-1-1")
+		self.assertEqual(self.site.find("Delivery Note Item", "DNI-1").against_sales_invoice, "SI-1")
+
+	def test_user_who_cannot_read_invoice_is_refused(self):
+		self.site.permit = lambda doctype, ptype, doc, user: doctype != "Sales Invoice"
+		with self.assertRaises(PermissionError):
+			self.mod.relink_delivery_note("DN-A", "SI-1-1")
+
+	def test_permitted_relink(self):
+		self.assertEqual(self.mod.relink_delivery_note("DN-A", "SI-1-1")["rows_updated"], 1)
+		self.assertEqual(self.site.find("Delivery Note Item", "DNI-1").against_sales_invoice, "SI-1-1")
