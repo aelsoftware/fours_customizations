@@ -10,7 +10,8 @@ Hooks fired on Sales Order:
 
   on_submit
     • If custom_include_payment=1, validates custom_payments vs. grand_total
-      (accounting for change) and creates one submitted Payment Entry per row.
+      (accounting for change) and creates one submitted Payment Entry per row,
+      less the receipts an amended-from order kept (they move to this order).
 
   on_cancel
     • Cancels every Payment Entry that was created from this Sales Order —
@@ -385,8 +386,80 @@ def _effective_payments(doc) -> list[dict]:
 	return [r for r in rows if r["amount"] > 0]
 
 
+def _kept_payment_entries(doc) -> list[dict]:
+	"""Receipts an earlier version of this order kept when it was cancelled.
+
+	Deleting a draft Delivery Note cancels the Sales Order but leaves its
+	Payment Entries in place (delivery_note_handler: the cash stayed in the
+	drawer).  They still carry the cancelled order's name as reference_no.
+	"""
+	chain, name = [], doc.amended_from
+	while name and name not in chain:
+		chain.append(name)
+		name = frappe.db.get_value("Sales Order", name, "amended_from")
+	if not chain:
+		return []
+	return frappe.get_all(
+		"Payment Entry",
+		filters={
+			"reference_no": ["in", chain],
+			"party_type": "Customer",
+			"party": doc.customer,
+			"company": doc.company,
+			"payment_type": "Receive",
+			"paid_from_account_currency": doc.currency,
+			"docstatus": 1,
+		},
+		fields=["name", "paid_to", "paid_amount"],
+		order_by="creation asc",
+	)
+
+
+def _net_of_kept_payments(doc, rows: list[dict]) -> list[dict]:
+	"""Deduct the kept receipts from the amended order's payment rows.
+
+	The amendment copies the payment rows of the cancelled order, so booking
+	them again would record the same cash twice.  The kept receipts move onto
+	this order (so cancelling it later still finds them) and only what they do
+	not cover is booked: first against rows paid into the same account, then
+	against the remaining rows in order.
+	"""
+	kept = _kept_payment_entries(doc)
+	if not kept:
+		return rows
+
+	by_account: dict[str, float] = {}
+	for pe in kept:
+		frappe.db.set_value("Payment Entry", pe.name, "reference_no", doc.name)
+		by_account[pe.paid_to] = flt(by_account.get(pe.paid_to, 0) + flt(pe.paid_amount), 2)
+	remaining = flt(sum(by_account.values()), 2)
+
+	# Pass 1: same cash / bank account
+	for row in rows:
+		absorb = min(row["amount"], by_account.get(row["account"], 0))
+		if absorb > 0:
+			row["amount"] = flt(row["amount"] - absorb, 2)
+			by_account[row["account"]] = flt(by_account[row["account"]] - absorb, 2)
+			remaining = flt(remaining - absorb, 2)
+
+	# Pass 2: whatever is left, in row order
+	for row in rows:
+		absorb = min(row["amount"], remaining)
+		if absorb > 0:
+			row["amount"] = flt(row["amount"] - absorb, 2)
+			remaining = flt(remaining - absorb, 2)
+
+	label = "Payment Entries" if len(kept) > 1 else "Payment Entry"
+	frappe.msgprint(
+		f"{label} {', '.join(pe.name for pe in kept)} kept from the cancelled order "
+		f"now count{'' if len(kept) > 1 else 's'} toward {doc.name}.",
+		alert=True,
+	)
+	return [r for r in rows if r["amount"] > 0]
+
+
 def _create_payment_entries(doc):
-	effective = _effective_payments(doc)
+	effective = _net_of_kept_payments(doc, _effective_payments(doc))
 	if not effective:
 		frappe.msgprint("No effective payment amounts to record.", alert=True)
 		return

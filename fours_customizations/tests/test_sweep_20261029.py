@@ -493,6 +493,17 @@ class TestSweep173AutoCancelAuthz(SweepCase):
 		self.assertIn(("Sales Invoice", "read", "SI-4S-1"), seen)
 
 
+	def test_legacy_teardown_keeps_receipts_like_the_draft_note_path(self):
+		# #258: an invoice from before native DN -> SO linking is torn down here, not by the note's on_trash
+		chain = MagicMock()
+		self.enterContext(patch.dict(sys.modules, {
+			"fours_customizations.delivery_note_handler": stub(
+				"fours_customizations.delivery_note_handler", _cancel_sales_order_chain=chain),
+		}))
+		self.site.add("Sales Order", name="SO-OLD", custom_source_sales_invoice="SI-4S-1")
+		self.mod._teardown_linked_sales_orders(self.site.get_doc("Sales Invoice", "SI-4S-1"))
+		chain.assert_called_once_with("SO-OLD", deleted_dn="", cancel_payments=False)
+
 class TestSweep174CheckinPermission(SweepCase):
 	"""#174: add_checkin is the caller's own Employee Checkin insert, permission-checked (no ignore_permissions)."""
 
@@ -897,9 +908,10 @@ class TestSweep258KeepPaymentOnDraftDelete(SweepCase):
 			"CREATE TABLE `tabDelivery Note Item` (against_sales_order TEXT, so_detail TEXT)",
 		)
 		self.site.add("Company", name="4S", enable_selling_automations=1)
-		self.site.add("Sales Order", name="SO-1", docstatus=1, customer="C", company="4S")
+		self.site.add("Sales Order", name="SO-1", docstatus=1, customer="C", company="4S", currency="UGX")
 		self.site.add("Payment Entry", name="PE-1", docstatus=1, reference_no="SO-1", party_type="Customer", party="C",
-		              payment_type="Receive", company="4S")
+		              payment_type="Receive", company="4S", paid_to="Cash - 4S", paid_amount=500000,
+		              paid_from_account_currency="UGX")
 
 	def test_draft_delete_keeps_the_receipt(self):
 		self.dn_handler._cancel_sales_order_chain("SO-1", deleted_dn="DN-1", cancel_payments=False)
@@ -914,6 +926,59 @@ class TestSweep258KeepPaymentOnDraftDelete(SweepCase):
 	def test_plain_sales_order_cancel_still_cancels_its_receipts(self):
 		self.site.get_doc("Sales Order", "SO-1").cancel()
 		self.assertEqual(self.cancelled("Payment Entry"), ["PE-1"])
+
+
+	# -- the amendment of the cancelled order must not collect the kept cash again ------------------------------------
+	def submit_amendment(self, payments, name="SO-1-1", amended_from="SO-1"):
+		self.dn_handler._cancel_sales_order_chain("SO-1", deleted_dn="DN-1", cancel_payments=False)
+		self.site.add("Sales Order", name=name, amended_from=amended_from)
+		so = self.site.get_doc({
+			"doctype": "Sales Order", "name": name, "amended_from": amended_from, "docstatus": 1, "customer": "C",
+			"company": "4S", "currency": "UGX", "conversion_rate": 1, "custom_include_payment": 1,
+			"grand_total": sum(amount for _, amount in payments), "custom_change_amount": 0,
+			"custom_payments": [{"mode_of_payment": acc.split(" ")[0], "account": acc, "amount": amount}
+			                    for acc, amount in payments],
+		})
+		so.flags.skip_auto_delivery_note = True
+		self.so_handler.on_submit(so)
+		return so
+
+	def receipts(self):
+		return {row.name: (row.reference_no, row.paid_to, row.paid_amount)
+		        for row in self.site.get_all("Payment Entry", filters={"party": "C", "docstatus": 1},
+		                                     fields=["name", "reference_no", "paid_to", "paid_amount"])}
+
+	def test_amendment_reuses_the_kept_receipt(self):
+		self.submit_amendment([("Cash - 4S", 500000)])
+		self.assertEqual(self.receipts(), {"PE-1": ("SO-1-1", "Cash - 4S", 500000)})
+
+	def test_amendment_books_only_what_the_kept_receipt_does_not_cover(self):
+		self.submit_amendment([("Mobile - 4S", 200000), ("Cash - 4S", 500000)])
+		receipts = self.receipts()
+		self.assertEqual(receipts.pop("PE-1"), ("SO-1-1", "Cash - 4S", 500000))
+		self.assertEqual(list(receipts.values()), [("SO-1-1", "Mobile - 4S", 200000)])
+
+	def test_second_amendment_follows_the_whole_chain(self):
+		self.site.add("Sales Order", name="SO-1-1", amended_from="SO-1", docstatus=2)
+		self.submit_amendment([("Cash - 4S", 500000)], name="SO-1-2", amended_from="SO-1-1")
+		self.assertEqual(self.receipts(), {"PE-1": ("SO-1-2", "Cash - 4S", 500000)})
+
+	def test_cancelling_the_amendment_reverses_the_moved_receipt(self):
+		so = self.submit_amendment([("Cash - 4S", 500000)])
+		so.cancel()
+		self.assertEqual(self.cancelled("Payment Entry"), ["PE-1"])
+
+	def test_new_order_still_books_its_receipt(self):
+		self.site.add("Sales Order", name="SO-2")
+		so = self.site.get_doc({
+			"doctype": "Sales Order", "name": "SO-2", "docstatus": 1, "customer": "C", "company": "4S",
+			"currency": "UGX", "conversion_rate": 1, "custom_include_payment": 1, "grand_total": 500000,
+			"custom_change_amount": 0,
+			"custom_payments": [{"mode_of_payment": "Cash", "account": "Cash - 4S", "amount": 500000}],
+		})
+		so.flags.skip_auto_delivery_note = True
+		self.so_handler.on_submit(so)
+		self.assertEqual(sorted(v[0] for v in self.receipts().values()), ["SO-1", "SO-2"])
 
 
 class TestSweep261OutstandingCurrency(SweepCase):

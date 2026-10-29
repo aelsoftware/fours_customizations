@@ -259,7 +259,9 @@ def _teardown_linked_sales_orders(si):
     failed = []
     for so_name in so_names:
         try:
-            _cancel_sales_order_chain(so_name, deleted_dn="")
+            # Receipts stay, as when the draft note's on_trash tears the order
+            # down: an amendment of the order takes them over.
+            _cancel_sales_order_chain(so_name, deleted_dn="", cancel_payments=False)
         except Exception:
             failed.append(so_name)
             frappe.log_error(frappe.get_traceback(), "4S Auto-Cancel: SO teardown failed")
