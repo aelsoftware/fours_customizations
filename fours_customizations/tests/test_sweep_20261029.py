@@ -500,6 +500,15 @@ class TestSweep173AutoCancelAuthz(SweepCase):
 		self.perform.assert_not_called()
 		self.assertIn("automatically cancelled", self.mod._try_auto_cancel_invoice("SI-4S-1", "wrong customer")["message"])
 
+	def test_invoice_with_an_allocated_receipt_is_deferred_when_cancel_would_not_unlink_it(self):
+		# review r2: the kept receipt would stay allocated to the cancelled invoice (settles nothing)
+		self.site.add("Payment Entry Reference", parent="PE-1", reference_doctype="Sales Invoice",
+		              reference_name="SI-4S-1", docstatus=1)
+		self.assertIsNone(self.mod._try_auto_cancel_invoice("SI-4S-1", "wrong customer"))
+		self.perform.assert_not_called()
+		self.site.singles[("Accounts Settings", "unlink_payment_on_cancellation_of_invoice")] = 1
+		self.assertIn("automatically cancelled", self.mod._try_auto_cancel_invoice("SI-4S-1", "wrong customer")["message"])
+
 	def test_legacy_teardown_keeps_receipts_like_the_draft_note_path(self):
 		# #258: an invoice from before native DN -> SO linking is torn down here, not by the note's on_trash
 		chain = MagicMock()

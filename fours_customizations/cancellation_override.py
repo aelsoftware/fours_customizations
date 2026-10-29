@@ -149,6 +149,11 @@ def _try_auto_cancel_invoice(name, reason):
         # No Delivery Note at all — defer to the manual approval flow.
         return None
 
+    if _payments_stay_allocated(si.name):
+        # The order's receipt is kept for its amendment; one still allocated to
+        # the cancelled invoice could settle nothing — manual approval instead.
+        return None
+
     requester = frappe.session.user
     reason = reason.strip()
 
@@ -176,6 +181,23 @@ def _min_reason_length():
     except ImportError:
         return 0
     return get_min_reason_length()
+
+
+def _payments_stay_allocated(invoice_name):
+    """True when a submitted payment is allocated to the invoice and ERPNext
+    would leave it so on cancel (Accounts Settings does not unlink it)."""
+    if frappe.db.get_single_value("Accounts Settings", "unlink_payment_on_cancellation_of_invoice"):
+        return False
+    return bool(
+        frappe.db.exists(
+            "Payment Entry Reference",
+            {"reference_doctype": INVOICE_DOCTYPE, "reference_name": invoice_name, "docstatus": 1},
+        )
+        or frappe.db.exists(
+            "Journal Entry Account",
+            {"reference_type": INVOICE_DOCTYPE, "reference_name": invoice_name, "docstatus": 1},
+        )
+    )
 
 
 def _get_draft_delivery_notes(invoice_name):
