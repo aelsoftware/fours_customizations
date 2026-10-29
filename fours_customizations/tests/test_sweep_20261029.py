@@ -959,12 +959,14 @@ class TestSweep258KeepPaymentOnDraftDelete(SweepCase):
 
 
 	# -- the amendment of the cancelled order must not collect the kept cash again ------------------------------------
-	def submit_amendment(self, payments, name="SO-1-1", amended_from="SO-1"):
-		self.dn_handler._cancel_sales_order_chain("SO-1", deleted_dn="DN-1", cancel_payments=False)
+	def submit_amendment(self, payments, name="SO-1-1", amended_from="SO-1", customer="C", currency="UGX",
+	                     cancel_first=True):
+		if cancel_first:
+			self.dn_handler._cancel_sales_order_chain("SO-1", deleted_dn="DN-1", cancel_payments=False)
 		self.site.add("Sales Order", name=name, amended_from=amended_from)
 		so = self.site.get_doc({
-			"doctype": "Sales Order", "name": name, "amended_from": amended_from, "docstatus": 1, "customer": "C",
-			"company": "4S", "currency": "UGX", "conversion_rate": 1, "custom_include_payment": 1,
+			"doctype": "Sales Order", "name": name, "amended_from": amended_from, "docstatus": 1, "customer": customer,
+			"company": "4S", "currency": currency, "conversion_rate": 1, "custom_include_payment": 1,
 			"grand_total": sum(amount for _, amount in payments), "custom_change_amount": 0,
 			"custom_payments": [{"mode_of_payment": acc.split(" ")[0], "account": acc, "amount": amount}
 			                    for acc, amount in payments],
@@ -973,9 +975,9 @@ class TestSweep258KeepPaymentOnDraftDelete(SweepCase):
 		self.so_handler.on_submit(so)
 		return so
 
-	def receipts(self):
+	def receipts(self, party="C"):
 		return {row.name: (row.reference_no, row.paid_to, row.paid_amount)
-		        for row in self.site.get_all("Payment Entry", filters={"party": "C", "docstatus": 1},
+		        for row in self.site.get_all("Payment Entry", filters={"party": party, "docstatus": 1},
 		                                     fields=["name", "reference_no", "paid_to", "paid_amount"])}
 
 	def test_amendment_reuses_the_kept_receipt(self):
@@ -997,6 +999,43 @@ class TestSweep258KeepPaymentOnDraftDelete(SweepCase):
 		so = self.submit_amendment([("Cash - 4S", 500000)])
 		so.cancel()
 		self.assertEqual(self.cancelled("Payment Entry"), ["PE-1"])
+
+	def test_amended_from_a_live_order_takes_none_of_its_receipts(self):
+		# review r2: amended_from is only validated on insert; a live order's receipt is its own
+		self.submit_amendment([("Cash - 4S", 500000)], name="SO-9", cancel_first=False)
+		receipts = self.receipts()
+		self.assertEqual(receipts.pop("PE-1"), ("SO-1", "Cash - 4S", 500000))
+		self.assertEqual(list(receipts.values()), [("SO-9", "Cash - 4S", 500000)])
+
+	def test_amendment_to_another_customer_is_refused_while_the_receipt_is_live(self):
+		# review r2: PE-1 stays C's advance, so C2's copied cash row would record the cash twice
+		with self.assertRaises(ValidationError) as caught:
+			self.submit_amendment([("Cash - 4S", 500000)], customer="C2")
+		self.assertIn("PE-1", str(caught.exception))
+		self.assertEqual(self.receipts(), {"PE-1": ("SO-1", "Cash - 4S", 500000)})
+		self.assertEqual(self.receipts("C2"), {})
+
+	def test_amendment_in_another_currency_is_refused_while_the_receipt_is_live(self):
+		with self.assertRaises(ValidationError):
+			self.submit_amendment([("Cash - 4S", 500000)], currency="USD")
+		self.assertEqual(self.receipts(), {"PE-1": ("SO-1", "Cash - 4S", 500000)})
+
+	def test_corrected_payment_mode_is_refused_not_absorbed_by_another_account(self):
+		# review r2: a kept Cash receipt must not stand in for the corrected Mobile Money row
+		with self.assertRaises(ValidationError) as caught:
+			self.submit_amendment([("Mobile - 4S", 500000)])
+		self.assertIn("PE-1", str(caught.exception))
+		self.assertEqual(self.receipts(), {"PE-1": ("SO-1", "Cash - 4S", 500000)})
+
+	def test_kept_receipt_above_the_amended_total_stays_an_advance(self):
+		self.submit_amendment([("Cash - 4S", 400000)])
+		self.assertEqual(self.receipts(), {"PE-1": ("SO-1-1", "Cash - 4S", 500000)})
+		self.assertTrue([m for m in self.site.messages if "100,000.00" in m and "advance" in m])
+
+	def test_moved_receipt_names_the_amendment_in_its_remarks(self):
+		self.site.find("Payment Entry", "PE-1").remarks = "Payment received against Sales Order SO-1 via Cash."
+		self.submit_amendment([("Cash - 4S", 500000)])
+		self.assertIn("Moved to Sales Order SO-1-1", self.site.find("Payment Entry", "PE-1").remarks)
 
 	def test_new_order_still_books_its_receipt(self):
 		self.site.add("Sales Order", name="SO-2")

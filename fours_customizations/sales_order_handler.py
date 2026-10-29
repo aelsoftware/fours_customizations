@@ -392,27 +392,50 @@ def _kept_payment_entries(doc) -> list[dict]:
 	Deleting a draft Delivery Note cancels the Sales Order but leaves its
 	Payment Entries in place (delivery_note_handler: the cash stayed in the
 	drawer).  They still carry the cancelled order's name as reference_no.
+	Only cancelled orders count: a live order's receipts are its own.  A kept
+	receipt of another customer, company or currency cannot pay this order,
+	so the user must settle it first rather than have the cash booked twice.
 	"""
 	chain, name = [], doc.amended_from
 	while name and name not in chain:
+		if frappe.db.get_value("Sales Order", name, "docstatus") != 2:
+			break
 		chain.append(name)
 		name = frappe.db.get_value("Sales Order", name, "amended_from")
 	if not chain:
 		return []
-	return frappe.get_all(
+	kept = frappe.get_all(
 		"Payment Entry",
 		filters={
 			"reference_no": ["in", chain],
-			"party_type": "Customer",
-			"party": doc.customer,
-			"company": doc.company,
 			"payment_type": "Receive",
-			"paid_from_account_currency": doc.currency,
 			"docstatus": 1,
 		},
-		fields=["name", "paid_to", "paid_amount"],
+		fields=[
+			"name", "party_type", "party", "company", "paid_from_account_currency",
+			"paid_to", "paid_amount", "remarks",
+		],
 		order_by="creation asc",
 	)
+	foreign = [
+		pe for pe in kept
+		if (pe.party_type, pe.party, pe.company, pe.paid_from_account_currency)
+		!= ("Customer", doc.customer, doc.company, doc.currency)
+	]
+	if foreign:
+		frappe.throw(
+			"Payment Entries kept from the cancelled order belong to another customer, "
+			"company or currency: "
+			+ ", ".join(
+				f"<b>{pe.name}</b> ({pe.party}, {pe.company}, "
+				f"{fmt_money(pe.paid_amount, currency=pe.paid_from_account_currency)})"
+				for pe in foreign
+			)
+			+ ".<br>Cancel them, or keep this order on the original customer, company "
+			"and currency, before submitting it with payments.",
+			title="Kept Payment Entries",
+		)
+	return kept
 
 
 def _net_of_kept_payments(doc, rows: list[dict]) -> list[dict]:
@@ -421,8 +444,9 @@ def _net_of_kept_payments(doc, rows: list[dict]) -> list[dict]:
 	The amendment copies the payment rows of the cancelled order, so booking
 	them again would record the same cash twice.  The kept receipts move onto
 	this order (so cancelling it later still finds them) and only what they do
-	not cover is booked: first against rows paid into the same account, then
-	against the remaining rows in order.
+	not cover is booked, row by row against the same cash / bank account.  A
+	kept receipt in one account never stands in for a row of another (a
+	corrected payment mode): the user cancels it so the corrected row books.
 	"""
 	kept = _kept_payment_entries(doc)
 	if not kept:
@@ -430,24 +454,47 @@ def _net_of_kept_payments(doc, rows: list[dict]) -> list[dict]:
 
 	by_account: dict[str, float] = {}
 	for pe in kept:
-		frappe.db.set_value("Payment Entry", pe.name, "reference_no", doc.name)
 		by_account[pe.paid_to] = flt(by_account.get(pe.paid_to, 0) + flt(pe.paid_amount), 2)
-	remaining = flt(sum(by_account.values()), 2)
 
-	# Pass 1: same cash / bank account
 	for row in rows:
 		absorb = min(row["amount"], by_account.get(row["account"], 0))
 		if absorb > 0:
 			row["amount"] = flt(row["amount"] - absorb, 2)
 			by_account[row["account"]] = flt(by_account[row["account"]] - absorb, 2)
-			remaining = flt(remaining - absorb, 2)
 
-	# Pass 2: whatever is left, in row order
-	for row in rows:
-		absorb = min(row["amount"], remaining)
-		if absorb > 0:
-			row["amount"] = flt(row["amount"] - absorb, 2)
-			remaining = flt(remaining - absorb, 2)
+	unmatched = [pe for pe in kept if by_account.get(pe.paid_to, 0) > 0]
+	open_rows = [r for r in rows if r["amount"] > 0]
+	if unmatched and open_rows:
+		frappe.throw(
+			"Payment Entries kept from the cancelled order were paid into other accounts "
+			"than this order's payment rows: "
+			+ ", ".join(
+				f"<b>{pe.name}</b> ({pe.paid_to}, {fmt_money(pe.paid_amount, currency=doc.currency)})"
+				for pe in unmatched
+			)
+			+ ".<br>If the payment mode was corrected, cancel them so the corrected rows "
+			"are booked; otherwise key the rows to the account the money was received in.",
+			title="Kept Payment Entries",
+		)
+
+	for pe in kept:
+		frappe.db.set_value(
+			"Payment Entry",
+			pe.name,
+			{
+				"reference_no": doc.name,
+				"remarks": f"{pe.remarks or ''}\nMoved to Sales Order {doc.name} on amendment.".strip(),
+			},
+		)
+
+	excess = flt(sum(by_account.values()), 2)
+	if excess > 0:
+		frappe.msgprint(
+			f"{fmt_money(excess, currency=doc.currency)} of the kept receipts is more than "
+			f"{doc.name} collects and stays on the customer's account as an advance.",
+			indicator="orange",
+			alert=True,
+		)
 
 	label = "Payment Entries" if len(kept) > 1 else "Payment Entry"
 	frappe.msgprint(
