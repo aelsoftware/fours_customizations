@@ -755,6 +755,17 @@ class TestSweep183UpliftSalesPerson(DeliveryNoteCase):
 		team = [{"sales_person": "SP-2", "allocated_percentage": 100}]
 		self.assertEqual(self.uplift(sales_team=team).custom_sales_person, "SP-2")
 
+	def test_failed_uplift_reports_the_amount_still_owed(self):
+		self.enterContext(patch.object(self.mod, "_credit_price_uplift", side_effect=ValidationError("rejected")))
+		si_return = FakeDoc(self.site, "Sales Invoice", {"name": "SINV-RET-1", "currency": "UGX"})
+		dn = SimpleNamespace(name="DN-RET-1", customer="C")
+		rows = [{"item_code": "X", "qty": -2, "rate": 150}, {"item_code": "Y", "qty": -1, "rate": 1000}]
+		self.mod._credit_price_uplift_or_report(dn, "SI-1", si_return, rows)
+		(error,) = self.site.errors
+		self.assertEqual(error["title"], "4S DN return: price-uplift credit not raised")
+		self.assertIn("UGX 1,300.00", error["message"])
+		self.assertTrue(any("UGX 1,300.00" in m and "SINV-RET-1" in m for m in self.site.messages))
+
 
 class TestSweep184DeliveryFirstReturn(DeliveryNoteCase):
 	"""#184: a return of a delivery-first note finds its invoice through Sales Invoice Item.dn_detail."""

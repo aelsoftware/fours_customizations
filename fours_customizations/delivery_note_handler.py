@@ -334,8 +334,32 @@ def _create_and_submit_si_return(dn, si_name, si_item_qty, dn_rows):
 		alert=True,
 	)
 	if uplift:
-		_credit_price_uplift(dn, si_name, si_return, uplift)
+		_credit_price_uplift_or_report(dn, si_name, si_return, uplift)
 	_notify_goods_returned(dn, si_name, si_return, adjusted_rows)
+
+
+def _credit_price_uplift_or_report(dn, si_name, si_return, uplift):
+	"""Raise the uplift credit note; if it fails, say exactly what is still owed.
+
+	The return's own credit note is already submitted by now and on_submit
+	swallows errors, so a bare failure would leave only a generic alert while
+	the customer stays over-billed by the price increase.
+	"""
+	try:
+		return _credit_price_uplift(dn, si_name, si_return, uplift)
+	except Exception:
+		owed = sum(abs(flt(row["qty"])) * flt(row["rate"]) for row in uplift)
+		note = (
+			f"Credit note {si_return.name} was submitted for Delivery Note Return "
+			f"{dn.name}, but the credit for the price increase on {si_name} could "
+			f"not be raised: {frappe.utils.fmt_money(owed, currency=si_return.currency)} "
+			f"is still owed to {dn.customer}. Details are in the Error Log."
+		)
+		frappe.log_error(
+			title="4S DN return: price-uplift credit not raised",
+			message=f"{note}\n\n{frappe.get_traceback()}",
+		)
+		frappe.msgprint(note, indicator="orange", alert=True)
 
 
 def _credit_price_uplift(dn, si_name, si_return, uplift):
