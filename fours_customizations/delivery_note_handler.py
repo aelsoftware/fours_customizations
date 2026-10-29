@@ -128,6 +128,7 @@ def _sync_sales_invoice_return(dn):
 	# usually come across on the return rows; fall back to the original DN item.
 	qty_by_si_item = {}     # {si_name: {si_detail: qty (negative)}}
 	dn_row_by_si_item = {}  # {si_name: {si_detail: DN return item name}}
+	uncredited = []         # returned item codes no invoice row was found for
 	for item in dn.items:
 		si_name = item.get("against_sales_invoice")
 		si_detail = item.get("si_detail")
@@ -141,19 +142,36 @@ def _sync_sales_invoice_return(dn):
 			if orig:
 				si_name = si_name or orig.against_sales_invoice
 				si_detail = si_detail or orig.si_detail
+		if not si_name and item.get("dn_detail"):
+			# Delivery-first: the invoice was made from the note, so only the
+			# invoice row points back (Sales Invoice Item.dn_detail).
+			si_name, si_detail = _invoice_row_billing(item.dn_detail)
 		# Only the invoice is essential. A row may carry no si_detail at all —
 		# older notes often do not — and dropping it here is why a return could
 		# credit nothing: the item code is enough to find the row it reverses.
 		if not si_name:
+			uncredited.append(item.get("item_code"))
 			continue
 		si_detail = _resolve_si_detail(si_name, si_detail, item.get("item_code"))
 		if not si_detail:
+			uncredited.append(item.get("item_code"))
 			continue
 		qty_by_si_item.setdefault(si_name, {})
 		qty_by_si_item[si_name][si_detail] = (
 			qty_by_si_item[si_name].get(si_detail, 0) + flt(item.qty)
 		)
 		dn_row_by_si_item.setdefault(si_name, {})[si_detail] = item.name
+
+	if uncredited:
+		# Never silent: if these goods were billed, the customer is still owed.
+		note = (
+			f"No single submitted Sales Invoice row was found for "
+			f"{', '.join(sorted({code or '?' for code in uncredited}))} on Delivery Note "
+			f"Return {dn.name}, so no credit note was raised for them. If they were "
+			f"billed, the customer still has to be credited."
+		)
+		frappe.log_error(note, "4S DN return: rows without an invoice")
+		frappe.msgprint(note, indicator="orange", alert=True)
 
 	for si_name, si_item_qty in qty_by_si_item.items():
 		if frappe.db.get_value("Sales Invoice", si_name, "docstatus") != 1:
@@ -179,6 +197,30 @@ def _sync_sales_invoice_return(dn):
 		_create_and_submit_si_return(
 			dn, si_name, si_item_qty, dn_row_by_si_item.get(si_name, {})
 		)
+
+
+def _invoice_row_billing(dn_detail):
+	"""(invoice, invoice row) of the one submitted forward Sales Invoice row that
+	billed Delivery Note row *dn_detail*, else (None, None) — a row billed by
+	several invoices is not guessed at."""
+	rows = frappe.get_all(
+		"Sales Invoice Item",
+		filters={"dn_detail": dn_detail, "docstatus": 1},
+		fields=["name", "parent"],
+	)
+	if not rows:
+		return None, None
+	forward = set(
+		frappe.get_all(
+			"Sales Invoice",
+			filters={"name": ["in", list({row.parent for row in rows})], "is_return": 0, "docstatus": 1},
+			pluck="name",
+		)
+	)
+	rows = [row for row in rows if row.parent in forward]
+	if len(rows) != 1:
+		return None, None
+	return rows[0].parent, rows[0].name
 
 
 def _resolve_si_detail(si_name, si_detail, item_code):

@@ -715,3 +715,41 @@ class TestSweep183UpliftSalesPerson(DeliveryNoteCase):
 	def test_single_sales_team_person_used(self):
 		team = [{"sales_person": "SP-2", "allocated_percentage": 100}]
 		self.assertEqual(self.uplift(sales_team=team).custom_sales_person, "SP-2")
+
+
+class TestSweep184DeliveryFirstReturn(DeliveryNoteCase):
+	"""#184: a return of a delivery-first note finds its invoice through Sales Invoice Item.dn_detail."""
+
+	def setUp(self):
+		super().setUp()
+		self.make = self.enterContext(patch.object(self.mod, "_create_and_submit_si_return"))
+		self.site.add("Delivery Note Item", name="DNI-1", parent="DN-1", item_code="X", against_sales_invoice=None, si_detail=None)
+		self.site.add("Sales Invoice", name="SI-1", docstatus=1, is_return=0)
+		self.site.add("Sales Invoice Item", name="SII-1", parent="SI-1", item_code="X", delivery_note="DN-1", dn_detail="DNI-1", docstatus=1)
+		# a credit note copied from SI-1 keeps the forward dn_detail: never the invoice to credit
+		self.site.add("Sales Invoice", name="SI-RET-0", docstatus=1, is_return=1)
+		self.site.add("Sales Invoice Item", name="SII-R0", parent="SI-RET-0", item_code="X", dn_detail="DNI-1", docstatus=1)
+
+	def ret(self, dn_detail="DNI-1"):
+		return FakeDoc(self.site, "Delivery Note", {
+			"name": "DN-RET-1", "is_return": 1, "return_against": "DN-1", "custom_remarks": "",
+			"items": [{"name": "RET-ROW-1", "item_code": "X", "qty": -2, "dn_detail": dn_detail}],
+		})
+
+	def test_invoice_found_through_dn_detail(self):
+		dn = self.ret()
+		self.mod._sync_sales_invoice_return(dn)
+		self.make.assert_called_once_with(dn, "SI-1", {"SII-1": -2}, {"SII-1": "RET-ROW-1"})
+
+	def test_two_invoices_for_the_row_are_reported_not_guessed(self):
+		self.site.add("Sales Invoice", name="SI-2", docstatus=1, is_return=0)
+		self.site.add("Sales Invoice Item", name="SII-2", parent="SI-2", item_code="X", dn_detail="DNI-1", docstatus=1)
+		self.mod._sync_sales_invoice_return(self.ret())
+		self.make.assert_not_called()
+		self.assertTrue(any("RET-ROW-1" in str(m) or "X" in str(m) for m in self.site.messages))
+
+	def test_unbilled_row_is_reported(self):
+		self.site.add("Delivery Note Item", name="DNI-9", parent="DN-1", item_code="X")
+		self.mod._sync_sales_invoice_return(self.ret("DNI-9"))
+		self.make.assert_not_called()
+		self.assertTrue(self.site.messages)
