@@ -26,7 +26,8 @@
    "test": "fours_customizations/tests/test_sweep_20261029.py::TestSweep173AutoCancelAuthz (4 tests incl. min reason length and the #258 legacy-teardown test)",
    "red_first": "2/2 FAIL at base (cross-company requester got the invoice cancelled; no read check made). red evidence: the final test module run against the a75b333 production files (/opt/build/ent-fours-wt/sweep-20261029-evidence/final-module-at-base.txt); min-reason-length test FAIL at the round-1 code (/opt/build/ent-fours-wt/sweep-20261029-evidence/r2-173-red.txt)",
    "bench": "As a Vox-only user (Company User Permission) and as the store keeper without Sales Invoice access, call request_cancellation on a 4S invoice with a draft DN: invoice must stay submitted and the ordinary request flow must answer; as the 4S sales user it must still auto-cancel.",
-   "review_round_1": "Reviewer asked whether to also require an auto-cancel role. Not done, with evidence: in cancellation_requests.api.request_cancellation a holder of can_user_auto_cancel already gets auto_cancel_document (immediate cancel) in the original flow, so requiring that role would make the fast track dead code; the fast track exists for requesters without cancel rights (_perform_auto_cancellation docstring). Kept read (role + company) as the audience; lead may still narrow it to a dedicated role."
+   "review_round_1": "Reviewer asked whether to also require an auto-cancel role. Not done, with evidence: in cancellation_requests.api.request_cancellation a holder of can_user_auto_cancel already gets auto_cancel_document (immediate cancel) in the original flow, so requiring that role would make the fast track dead code; the fast track exists for requesters without cancel rights (_perform_auto_cancellation docstring). Kept read (role + company) as the audience; lead may still narrow it to a dedicated role.",
+   "review_round_2": "Audience unchanged (read on the invoice); lead decision, see open_questions. Round 2 adds one more deferral: an invoice with a payment allocated that ERPNext would not unlink on cancel goes to the request flow (see #258 review_round_2)."
   },
   {
    "id": 174,
@@ -37,7 +38,14 @@
    "commit": "b6cab0c, 8d73d55 (review round 1)",
    "test": "fours_customizations/tests/test_sweep_20261029.py::TestSweep174CheckinPermission (5 tests; round 2 models Company User Permissions the way Frappe applies them: only through a document's own link fields, so on Employee, never on Employee Checkin)",
    "red_first": "5/5 FAIL at base; 2/5 (other-company employee, duplicate of other-company punch) FAIL at the round-1 code: the reviewer's cross-company bypass reproduced (/opt/build/ent-fours-wt/sweep-20261029-evidence/r2-174-red.txt)",
-   "bench": "RELEASE GATE (blocking, before deploy): on the lab copy identify the user behind the biometric sync token (biometric-sync-src SendBiometricLogsToERP.php); it must hold Employee Checkin create AND read on Employee (HR User/HR Manager/System Manager) and have NO Company/Employee User Permission, or one covering every company whose staff use the devices; then replay one 4S and one Vox punch through add_checkin as that user (status created). Otherwise every punch 403s, the PHP retries forever, no Attendance is projected and the nightly job marks staff Absent (payroll deductions). Then: as a Vox-only HR User (Company User Permission = Vox) post a punch for a 4S employee -> 403 and no Employee Checkin row; as a till user with the Employee role for another employee -> 403; for their own employee -> created."
+   "bench": "RELEASE GATE (blocking, before deploy): on the lab copy identify the user behind the biometric sync token (biometric-sync-src SendBiometricLogsToERP.php); it must hold Employee Checkin create AND read on Employee (HR User/HR Manager/System Manager) and have NO Company/Employee User Permission, or one covering every company whose staff use the devices; then replay one 4S and one Vox punch through add_checkin as that user (status created). Otherwise every punch 403s, the PHP retries forever, no Attendance is projected and the nightly job marks staff Absent (payroll deductions). Then: as a Vox-only HR User (Company User Permission = Vox) post a punch for a 4S employee -> 403 and no Employee Checkin row; as a till user with the Employee role for another employee -> 403; for their own employee -> created.",
+   "review_round_2": {
+    "fix": "checkin_handler.py:84-96 + 137-145: for a caller whose Employee access is limited (no Employee read role, or any User Permission) an unresolved employee ID now gets the same PermissionError ('Not permitted to record punches for <value>') as another company's employee, closing the ID-existence oracle; the out-of-scope check uses has_permission without throw and the same refusal (identical message). An unrestricted caller (the device user) still gets 200 unknown_employee.",
+    "commit": "7349b9d",
+    "test": "TestSweep174CheckinPermission::test_restricted_caller_cannot_tell_unknown_ids_from_other_companies, ::test_unrestricted_device_user_still_gets_unknown_employee (pin)",
+    "red_first": "FAIL at the round-2 code (/opt/build/ent-fours-wt/sweep-20261029-evidence/r3-module-at-round2-head.txt)",
+    "not_changed": "Out-of-scope punches stay 403 (not a 200 business status): a 200 would make the device drop the punch for good and the nightly job mark the staff Absent; with 403 the punch is retried and lands once the token user is fixed. The release gate stays blocking. Employee-role own punches: as upstream hrms, not a regression."
+   }
   },
   {
    "id": 178,
@@ -115,7 +123,15 @@
    "commit": "5a6d653, 0052a60 (review round 1)",
    "test": "fours_customizations/tests/test_sweep_20261029.py::TestSweep258KeepPaymentOnDraftDelete (8 tests: keep on draft delete; amendment reuses the kept receipt -> exactly one submitted PE; amendment books only the uncovered part (Mobile 200,000 new, Cash 500,000 kept); second amendment follows the whole chain; desk cancel of the amendment reverses the moved PE; pins: plain SO cancel and cancel_payments teardown still cancel, a new order still books its receipt) + TestSweep173AutoCancelAuthz::test_legacy_teardown_keeps_receipts_like_the_draft_note_path",
    "red_first": "At the round-1 code 4/8 FAIL (the reviewer's double receipt: PE-1 + a new 500,000 PE); at base 5/8 fail/error (/opt/build/ent-fours-wt/sweep-20261029-evidence/r2-258-red.txt); legacy teardown test FAIL at the round-1 code (/opt/build/ent-fours-wt/sweep-20261029-evidence/r2-258-legacy-red.txt)",
-   "bench": "4S SO with custom_include_payment submitted (PE-1 created) -> delete the draft DN: SO cancelled, PE-1 stays submitted, no 'Payment Entry cancelled' message. Amend the SO and submit it with the copied payment rows: still exactly one submitted Receive PE for the cash (PE-1, reference_no now the amendment), alert names it; amend with a larger total / a second mode: only the difference is booked. Desk cancel of the amendment cancels PE-1. Fast track on a legacy invoice (SO linked only via custom_source_sales_invoice): PEs stay."
+   "bench": "4S SO with custom_include_payment submitted (PE-1 created) -> delete the draft DN: SO cancelled, PE-1 stays submitted, no 'Payment Entry cancelled' message. Amend the SO and submit it with the copied payment rows: still exactly one submitted Receive PE for the cash (PE-1, reference_no now the amendment), alert names it; amend with a larger total / a second mode: only the difference is booked. Desk cancel of the amendment cancels PE-1. Fast track on a legacy invoice (SO linked only via custom_source_sales_invoice): PEs stay.",
+   "review_round_2": {
+    "fix": "sales_order_handler.py:389-438 _kept_payment_entries: the amended_from chain counts only cancelled orders (docstatus 2) and stops at the first live one; kept receipts are found by reference_no in the chain (Receive, submitted) without party/company/currency filters, and if any belongs to another customer, company or currency the amendment's submit with payments is refused naming each PE with its customer, company and amount (the user cancels it or keeps the original customer/currency). sales_order_handler.py:441-505 _net_of_kept_payments: kept receipts net only against rows of the same cash/bank account; a kept surplus while rows of another account are still open (a corrected payment mode) is refused, naming the PEs, so the user cancels the kept PE and the corrected row books; a kept surplus with nothing left to book stays as the customer's advance with an orange alert; the checks run before any write, and the moved PE's remarks get 'Moved to Sales Order <amendment> on amendment.'. cancellation_override.py:152-155 + 186-200 _payments_stay_allocated: the fast track defers to the request flow when a submitted Payment Entry Reference / Journal Entry Account is allocated to the invoice and Accounts Settings.unlink_payment_on_cancellation_of_invoice is off (ERPNext would leave the kept receipt allocated to the cancelled invoice, accounts_controller.py:1981).",
+    "commit": "e332456, 9c68c90",
+    "test": "TestSweep258KeepPaymentOnDraftDelete +6 (live amended_from takes nothing; amendment to customer C2 refused while PE-1 live on C, no C2 PE; amendment in USD refused; corrected Cash->Mobile mode refused, PE-1 untouched; kept surplus over a smaller amendment stays an advance with alert; moved PE remarks name the amendment) + TestSweep173AutoCancelAuthz::test_invoice_with_an_allocated_receipt_is_deferred_when_cancel_would_not_unlink_it",
+    "red_first": "7/7 FAIL at the round-2 code /opt/build/ent-fours-wt/sweep-20261029-evidence/r3-module-at-round2-head.txt (the reviewer's C2 double receipt and live-order probe reproduced as test failures)",
+    "bench": "Add to the #258 rehearsal: (a) amend the cancelled SO to another customer and submit with payments -> refused naming PE-1 (customer, amount); cancel PE-1, submit -> one PE for the new customer. (b) amend with the payment row changed Cash -> Mobile Money -> refused; cancel PE-1 -> Mobile PE booked. (c) save a draft SO through the API with amended_from = a live submitted SO of the walk-in customer and submit with payments -> its own PE is booked, the live SO's PE keeps its reference_no. (d) read Accounts Settings.unlink_payment_on_cancellation_of_invoice on the site; with it off, request cancellation of an invoice whose SO receipt was allocated as an advance -> ordinary request flow, invoice stays submitted; with it on -> auto-cancelled and the PE becomes an unallocated advance (check Payment Ledger Entry).",
+    "reviewer_findings": "major 'kept receipt of the old customer + new receipt for C2' fixed (refusal); minor amended_from live order fixed; minor cross-account absorption fixed (refusal); minor currency mismatch fixed (refusal instead of silent rebook); minor remarks fixed; minor allocated-advance fast track fixed (defer when ERPNext would not unlink)."
+   }
   }
  ],
  "minors_fixed": [
@@ -285,7 +301,8 @@
   "full_run": "python3 -m unittest discover -s fours_customizations/tests -t .: base 106 tests errors=71, round 1 146 tests errors=71, round 2 156 tests errors=71; the failing set is identical to round 1 and base (diffed, /opt/build/ent-fours-wt/sweep-20261029-evidence/r2-full-head.txt). Pre-existing: 19 modules need a bench (No module named 'frappe'); test_vox_pilot_correction / test_vox_pilot_credit need a sibling kit_pos checkout (../kit_pos/kit_pos/connector/auto_held_lines.py).",
   "stub_run_of_bench_only_write_free_tests": "test_vox_negative_stock_guard + test_kit_bom_supersede (30 tests) under stub frappe: OK at base and at HEAD",
   "compileall": "python3 -m compileall -q fours_customizations: clean (round 2)",
-  "evidence_dir": "/opt/build/ent-fours-wt/sweep-20261029-evidence (per-finding red/green runs, final-module-at-base.txt, full-base/full-head runs)"
+  "evidence_dir": "/opt/build/ent-fours-wt/sweep-20261029-evidence (per-finding red/green runs, final-module-at-base.txt, full-base/full-head runs)",
+  "round_3": "test_sweep_20261029.py: 59 tests, all green at HEAD; against the round-2 code 8 FAIL (the new tests) /opt/build/ent-fours-wt/sweep-20261029-evidence/r3-module-at-round2-head.txt; against the a75b333 production files 48 fail/error, 11 pass as pins /opt/build/ent-fours-wt/sweep-20261029-evidence/r3-final-module-at-base.txt. Full run python3 -m unittest discover -s fours_customizations/tests -t .: 165 tests, errors=71, failing set identical to round 2 (diffed; /opt/build/ent-fours-wt/sweep-20261029-evidence/r3-full-head.txt). compileall clean."
  },
  "release_notes": {
   "users": [
@@ -300,17 +317,20 @@
    "Negative-stock automation counts pack lines in stock units and sums rows of one item, so carton sales no longer fail with Insufficient Stock where the automation should have armed.",
    "Reconcile All needs Stock Reconciliation create permission; the broken-chain audit and the relink repair respect the caller's permissions; the outstanding-debt notice shows foreign-currency receivables in their own currency.",
    "DN Returns: if the price-uplift credit note cannot be raised, the alert and Error Log now state the exact amount still owed.",
-   "Outstanding-debt block on Sales Order submit: each receivable account is now judged and shown in its own account currency (a foreign-currency receivable settled in that currency no longer blocks because of an exchange-difference residue in company currency)."
+   "Outstanding-debt block on Sales Order submit: each receivable account is now judged and shown in its own account currency (a foreign-currency receivable settled in that currency no longer blocks because of an exchange-difference residue in company currency).",
+   "Amending a Sales Order cancelled by a draft Delivery Note deletion, with payments: refused (naming the kept Payment Entries) when a kept receipt belongs to another customer/company/currency or was paid into a different account than the amendment's payment rows - cancel the kept Payment Entry first, then submit; a kept receipt larger than the amended order stays on the customer's account as an advance (orange alert); a moved receipt's remarks name the amendment.",
+   "Request Cancellation fast track: an invoice with a payment allocated to it goes through the normal request flow unless Accounts Settings unlinks payments on invoice cancellation.",
+   "Device check-in endpoint: a caller with limited Employee access gets the same 403 for an unknown employee ID as for another company's employee; the device user (unrestricted) still gets unknown_employee."
   ],
-  "connector_routes": "No kit_pos connector route, response shape or status code is changed; no connector file is touched. The only change on the tills' path is server-side: negative_stock_handler.ensure_negative_stock_for_doc (Sales Invoice before_submit during materialization) now arms for pack lines, i.e. fewer NegativeStockError refusals. The sales-chain cancel guards (#182/#253) only bite where Delivery Notes exist (not on update_stock POS invoices). Round 2 touches no connector file either; add_checkin is not a kit_pos connector route (biometric PHP only).",
+  "connector_routes": "No kit_pos connector route, response shape or status code is changed; no connector file is touched. The only change on the tills' path is server-side: negative_stock_handler.ensure_negative_stock_for_doc (Sales Invoice before_submit during materialization) now arms for pack lines, i.e. fewer NegativeStockError refusals. The sales-chain cancel guards (#182/#253) only bite where Delivery Notes exist (not on update_stock POS invoices). Round 2 touches no connector file either; add_checkin is not a kit_pos connector route (biometric PHP only). Round 3 touches no connector file; add_checkin's answers for the unrestricted device user are unchanged.",
   "pre_deploy_gates": [
    "#174: confirm the biometric sync token user's roles and User Permissions on the lab copy and replay a 4S and a Vox punch through add_checkin (blocking: otherwise punches 403 forever and the nightly job marks staff Absent)."
   ]
  },
  "migrate": "none: no DocType schema change, no Custom Field, no fixture, no patch. Only core fields are read (stock_qty, conversion_factor, base_paid_amount, dn_detail, *_in_account_currency, Item Price.uom, Shift Assignment.end_date); safe on ddamu's un-migrated schema.",
  "risks": [
-  "#174: if the biometric sync token's user lacks Employee Checkin create or Employee read, or is fenced by a Company/Employee User Permission not covering every device company, punches 403 and the PHP retries forever: release gate. Users with the hrms Employee role can still create their own punches (as upstream hrms).",
-  "#258: kept receipts are re-pointed (reference_no) to the amended order on its submit; the amount comparison uses paid_amount in the order currency and only PEs with paid_from_account_currency = order currency count. A receipt already allocated to an invoice still counts as covering the amendment (it is the same cash). If the amendment changes customer, the kept PE stays with the old customer as an advance and the new order books its own. The fast track now keeps receipts for legacy invoices too.",
+  "#174: if the biometric sync token's user lacks Employee Checkin create or Employee read, or is fenced by a Company/Employee User Permission not covering every device company, punches 403 and the PHP retries forever: release gate. Users with the hrms Employee role can still create their own punches (as upstream hrms). Round 3: a restricted caller now also gets 403 (not unknown_employee) for unknown IDs; the unrestricted device user is unaffected.",
+  "#258: kept receipts are re-pointed (reference_no, remarks) to the amended order on its submit; only cancelled orders in the amended_from chain count; a kept receipt of another customer/company/currency, or one paid into an account none of the amendment's rows use while other rows are open, refuses the submit with payments (the user cancels the kept PE) - stricter than base on these amend paths, by design. A receipt already allocated to an invoice still counts as covering the amendment (same cash); the fast track defers such invoices when ERPNext would not unlink them. The fast track keeps receipts for legacy invoices too.",
   "#180: Attendance row lock adds a lock to the after_insert path; Kit Attend locks Employee first, the fours endpoint takes only the Attendance lock, so no lock cycle is expected, but the lab should run a concurrent punch burst.",
   "#186: saving end_date on a submitted Shift Assignment runs HRMS on_update_after_submit; assignments HRMS refuses to update are logged and left (as cancel failures were).",
   "#182/#253 make cancellation stricter: some cancels that passed before (partial returns, amendments) are now refused with the existing 'Delivery Note still submitted' message.",
@@ -344,6 +364,24 @@
     "#165 carton discount / customer rows (lead decision, release note)",
     "#182 per-row netting (fails closed, documented)",
     "#184 alert on returns of never-billed delivery-first notes kept (fail loud; an invoice-first row whose si_detail cannot be resolved would be silenced by a per_billed check)"
+   ]
+  },
+  {
+   "round": 2,
+   "majors_fixed": [
+    "#258 double receipt when the amendment changes customer (e332456)"
+   ],
+   "minors_fixed": [
+    "#258 amended_from of a live order (e332456)",
+    "#258 cross-account absorption (e332456)",
+    "#258 currency mismatch rebook (e332456)",
+    "#258 moved PE remarks (e332456)",
+    "#258 fast track with an allocated advance (9c68c90)",
+    "#174 employee-ID oracle (7349b9d)"
+   ],
+   "minors_left": [
+    "#173 audience (lead decision, open question)",
+    "#174 out-of-scope stays 403, not a 200 business status (silent punch loss; release gate covers)"
    ]
   }
  ]
