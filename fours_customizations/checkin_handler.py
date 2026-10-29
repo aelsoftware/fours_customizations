@@ -77,7 +77,7 @@ def add_checkin(
 
 	# The punch is the caller's own Employee Checkin (as in hrms'
 	# add_log_based_on_employee_field): role permission first, then the
-	# document check, which applies Employee / Company User Permissions.
+	# employee's company and the document check (Employee User Permissions).
 	frappe.has_permission("Employee Checkin", "create", throw=True)
 
 	employee = _resolve_employee(employee_field_value, employee_fieldname)
@@ -85,6 +85,10 @@ def add_checkin(
 		# Device user with no Employee record — acknowledge so the
 		# integration does not retry forever, but report it clearly.
 		return {"status": "unknown_employee", "employee_field_value": employee_field_value}
+
+	# Employee Checkin has no Company link, so Company User Permissions only
+	# bite through the Employee record itself.
+	frappe.has_permission("Employee", "read", doc=employee, throw=True)
 
 	time = get_datetime(timestamp)
 	checkin = frappe.new_doc("Employee Checkin")

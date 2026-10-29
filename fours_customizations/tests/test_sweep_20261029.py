@@ -512,9 +512,19 @@ class TestSweep174CheckinPermission(SweepCase):
 			self.punch()
 		self.assertEqual(self.site.rows("Employee Checkin"), [])
 
+	def company_user_permission(self, company="4S Industries Limited"):
+		"""A Company User Permission as Frappe applies it: only through a document's own Company link.
+
+		Employee Checkin has no Company field, so the rule bites on Employee only."""
+		def permit(doctype, ptype, doc, user):
+			if doctype != "Employee" or doc is None:
+				return True
+			row = self.site.find("Employee", doc if isinstance(doc, str) else doc.name)
+			return row is not None and row.company == company
+		self.site.permit = permit
+
 	def test_other_company_employee_is_refused(self):
-		# User Permission on Company: the document-level check refuses the other company's employee
-		self.site.permit = lambda doctype, ptype, doc, user: doc is None or doc.employee == "HR-EMP-4S"
+		self.company_user_permission()
 		with self.assertRaises(PermissionError):
 			self.punch("HR-EMP-VOX")
 		self.assertEqual(self.site.rows("Employee Checkin"), [])
@@ -522,9 +532,19 @@ class TestSweep174CheckinPermission(SweepCase):
 
 	def test_duplicate_of_other_company_punch_is_refused(self):
 		self.site.add("Employee Checkin", name="CHK-1", employee="HR-EMP-VOX", time=datetime(2026, 10, 28, 9))
-		self.site.permit = lambda doctype, ptype, doc, user: doc is None or doc.employee == "HR-EMP-4S"
+		self.company_user_permission()
 		with self.assertRaises(PermissionError):
 			self.punch("HR-EMP-VOX")
+		self.assertFalse([entry for entry in self.site.log if entry[:2] == ("get_doc", "Employee Checkin")])
+
+	def test_employee_user_permission_limits_to_own_punches(self):
+		# Employee role: the User Permission on Employee is checked on the checkin's own employee link
+		self.site.permit = lambda doctype, ptype, doc, user: (
+			doc is None or (doc if isinstance(doc, str) else getattr(doc, "employee", None) or doc.name) == "HR-EMP-4S"
+		)
+		with self.assertRaises(PermissionError):
+			self.punch("HR-EMP-VOX")
+		self.assertEqual(self.punch()["status"], "created")
 
 	def test_permitted_insert_is_not_elevated(self):
 		self.assertEqual(self.punch()["status"], "created")
