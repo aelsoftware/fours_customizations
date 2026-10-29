@@ -51,7 +51,7 @@ def _get_customer_outstanding(customer: str, company: str) -> list[dict]:
 		"""
 		SELECT
 			gle.account,
-			SUM(gle.debit - gle.credit)   AS balance,
+			SUM(gle.debit_in_account_currency - gle.credit_in_account_currency) AS balance,
 			a.account_currency            AS currency
 		FROM `tabGL Entry` gle
 		INNER JOIN `tabAccount` a

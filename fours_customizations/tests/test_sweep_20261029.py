@@ -887,3 +887,21 @@ class TestSweep258KeepPaymentOnDraftDelete(SweepCase):
 	def test_plain_sales_order_cancel_still_cancels_its_receipts(self):
 		self.site.get_doc("Sales Order", "SO-1").cancel()
 		self.assertEqual(self.cancelled("Payment Entry"), ["PE-1"])
+
+
+class TestSweep261OutstandingCurrency(SweepCase):
+	"""#261 (minor): the debt notice's per-account balance is in that account's own currency."""
+
+	def test_usd_receivable_shown_in_usd(self):
+		price_lists = stub("fours_customizations.price_lists", selling_list_for=lambda *a: None)
+		mod = self.load("sales_order_handler.py", {**erpnext_stubs(), "fours_customizations.price_lists": price_lists})
+		db = self.sqlite(
+			"CREATE TABLE `tabGL Entry` (account TEXT, party_type TEXT, party TEXT, company TEXT, is_cancelled INT,"
+			" debit REAL, credit REAL, debit_in_account_currency REAL, credit_in_account_currency REAL)",
+			"CREATE TABLE `tabAccount` (name TEXT, account_type TEXT, account_currency TEXT)",
+		)
+		db.execute("INSERT INTO `tabAccount` VALUES ('Debtors USD', 'Receivable', 'USD'), ('Debtors', 'Receivable', 'UGX')")
+		db.execute("INSERT INTO `tabGL Entry` VALUES ('Debtors USD', 'Customer', 'C', '4S', 0, 370000, 0, 100, 0)")
+		db.execute("INSERT INTO `tabGL Entry` VALUES ('Debtors', 'Customer', 'C', '4S', 0, 5000, 1000, 5000, 1000)")
+		rows = {r.account: (r.balance, r.currency) for r in mod._get_customer_outstanding("C", "4S")}
+		self.assertEqual(rows, {"Debtors USD": (100, "USD"), "Debtors": (4000, "UGX")})
