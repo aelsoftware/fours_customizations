@@ -753,3 +753,35 @@ class TestSweep184DeliveryFirstReturn(DeliveryNoteCase):
 		self.mod._sync_sales_invoice_return(self.ret("DNI-9"))
 		self.make.assert_not_called()
 		self.assertTrue(self.site.messages)
+
+
+class TestSweep186ShiftHistory(SweepCase):
+	"""#186: changing or clearing the shift ends the running assignment the day before; only later ones are cancelled."""
+
+	def setUp(self):
+		super().setUp()
+		self.mod = self.load("employee_handler.py", {SETTINGS_MODULE: stub(SETTINGS_MODULE, get_setting=lambda *a: None)})
+		self.site.add("Shift Assignment", name="SA-OCT", employee="E1", shift_type="A", docstatus=1, status="Active",
+		              start_date=date(2026, 10, 1), end_date=None)
+		self.site.add("Shift Assignment", name="SA-SEP", employee="E1", shift_type="A", docstatus=1, status="Inactive",
+		              start_date=date(2026, 9, 1), end_date=date(2026, 9, 30))
+		self.site.add("Shift Assignment", name="SA-LATER", employee="E1", shift_type="A", docstatus=1, status="Active",
+		              start_date=date(2026, 10, 28), end_date=date(2026, 12, 31))
+
+	def employee(self, shift):
+		return SimpleNamespace(name="E1", default_shift=shift, company="4S", date_of_joining=date(2025, 1, 1))
+
+	def test_shift_change_keeps_history(self):
+		self.mod._sync_shift_assignment(self.employee("B"), self.employee("A"))
+		oct_row = self.site.find("Shift Assignment", "SA-OCT")
+		self.assertEqual((oct_row.docstatus, oct_row.end_date), (1, date(2026, 10, 27)))
+		self.assertEqual(self.site.find("Shift Assignment", "SA-SEP").docstatus, 1)
+		self.assertEqual(self.cancelled("Shift Assignment"), ["SA-LATER"])
+		new = [r for r in self.site.rows("Shift Assignment") if r.shift_type == "B"]
+		self.assertEqual([(r.start_date, r.end_date, r.docstatus) for r in new], [(date(2026, 10, 28), None, 1)])
+
+	def test_cleared_shift_ends_yesterday(self):
+		self.mod._sync_shift_assignment(self.employee(None), self.employee("A"))
+		self.assertEqual(self.site.find("Shift Assignment", "SA-OCT").end_date, date(2026, 10, 27))
+		self.assertEqual(self.site.find("Shift Assignment", "SA-OCT").docstatus, 1)
+		self.assertEqual(self.cancelled("Shift Assignment"), ["SA-LATER"])

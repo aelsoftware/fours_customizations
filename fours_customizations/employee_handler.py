@@ -9,9 +9,10 @@ Assignment per day).
 
 on_update (fires on insert and on every save)
   Shift Assignment — keyed off ``default_shift``:
-    • New employee (or the shift changed): cancel any current/future submitted
-      Shift Assignment and create ONE open-ended assignment (no end date) for
-      the new shift. Past assignments are left untouched.
+    • New employee (or the shift changed): end the running submitted Shift
+      Assignment the day before (its days stay on record for payroll), cancel
+      any that start later, and create ONE open-ended assignment (no end date)
+      for the new shift. Past assignments are left untouched.
     • No ``default_shift`` set: nothing is created — the employee is not on a
       clock-in schedule and is excluded from attendance deductions.
 
@@ -26,7 +27,7 @@ on_update (fires on insert and on every save)
 from __future__ import annotations
 
 import frappe
-from frappe.utils import flt, getdate, nowdate
+from frappe.utils import add_days, flt, getdate, nowdate
 
 from fours_customizations.fours_customizations.doctype.four_s_industries_settings.four_s_industries_settings import (
 	get_setting,
@@ -72,7 +73,7 @@ def _sync_shift_assignment(doc, previous):
 	prev_shift = previous.default_shift if previous is not None else None
 	today = getdate(nowdate())
 
-	# Shift cleared (was set, now empty) → cancel the current/future assignment(s)
+	# Shift cleared (was set, now empty) → end the current / cancel future assignment(s)
 	# so the employee ends up with no active shift (e.g. drivers who are not
 	# always around and should not be subject to attendance deductions).
 	if not shift:
@@ -87,9 +88,9 @@ def _sync_shift_assignment(doc, previous):
 	doj = getdate(doc.date_of_joining) if doc.date_of_joining else None
 	from_date = doj if (doj and doj > today) else today
 
-	# Cancel any current or future submitted assignments so the new one doesn't
-	# overlap and the employee ends up with a single active assignment. Past
-	# assignments (already ended) are left for the historical record.
+	# End the running assignment the day before and cancel later ones, so the
+	# new one doesn't overlap and the employee ends up with a single active
+	# assignment. Past days keep their assignment for the historical record.
 	_cancel_current_future_assignments(doc.name, from_date)
 
 	sa = frappe.new_doc("Shift Assignment")
@@ -106,24 +107,30 @@ def _sync_shift_assignment(doc, previous):
 
 
 def _cancel_current_future_assignments(employee, from_date):
-	"""Cancel submitted Shift Assignments for `employee` that are open-ended or
-	end on/after `from_date`. Past assignments are left intact. Assignments that
-	cannot be cancelled (e.g. linked to an Employee Checkin) are skipped and
-	logged rather than raising."""
+	"""Stop submitted Shift Assignments for `employee` from covering `from_date`
+	onwards. One that started before `from_date` is ended the day before (its
+	days stay submitted: payroll's attendance deductions read them); one that
+	starts on/after it is cancelled. Past assignments are left intact.
+	Assignments that cannot be changed (e.g. linked to an Employee Checkin)
+	are skipped and logged rather than raising."""
 	for row in frappe.get_all(
 		"Shift Assignment",
 		filters={"employee": employee, "docstatus": 1},
-		fields=["name", "end_date"],
+		fields=["name", "start_date", "end_date"],
 	):
 		if row.end_date is None or getdate(row.end_date) >= from_date:
 			try:
 				sa = frappe.get_doc("Shift Assignment", row.name)
 				sa.flags.ignore_permissions = True
-				sa.cancel()
+				if getdate(row.start_date) < from_date:
+					sa.end_date = add_days(from_date, -1)  # end_date is allow_on_submit
+					sa.save()
+				else:
+					sa.cancel()
 			except Exception:
 				frappe.log_error(
 					frappe.get_traceback(),
-					f"4S Employee: could not cancel Shift Assignment {row.name}",
+					f"4S Employee: could not end Shift Assignment {row.name}",
 				)
 
 
