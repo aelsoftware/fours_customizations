@@ -785,3 +785,40 @@ class TestSweep186ShiftHistory(SweepCase):
 		self.assertEqual(self.site.find("Shift Assignment", "SA-OCT").end_date, date(2026, 10, 27))
 		self.assertEqual(self.site.find("Shift Assignment", "SA-OCT").docstatus, 1)
 		self.assertEqual(self.cancelled("Shift Assignment"), ["SA-LATER"])
+
+
+class TestSweep209NegativeStockUom(SweepCase):
+	"""#209: the projected balance subtracts stock-UOM quantities, summed per item and warehouse."""
+
+	def setUp(self):
+		super().setUp()
+		self.balance = {}
+		self.mod = self.load("negative_stock_handler.py", {
+			SETTINGS_MODULE: stub(SETTINGS_MODULE, get_settings=lambda: _dict(enable_negative_stock_automation=1)),
+			"fours_customizations.notifications": stub("fours_customizations.notifications", send_email=None, send_slack=None),
+			"fours_customizations.vox_kitchen_recipes": stub("fours_customizations.vox_kitchen_recipes", MENU=()),
+			"erpnext": stub("erpnext"), "erpnext.stock": stub("erpnext.stock"),
+			"erpnext.stock.utils": stub("erpnext.stock.utils", get_stock_balance=lambda item, wh: self.balance[(item, wh)]),
+		})
+		self.mod.frappe.db.sql = lambda *a, **k: []  # no BOMs
+		self.site.add("Item", name="X", is_stock_item=1, allow_negative_stock=0, custom_negative_stock_auto_enabled=0)
+
+	def flagged(self, balance, *rows):
+		self.balance[("X", "Stores")] = balance
+		doc = FakeDoc(self.site, "Sales Invoice", {
+			"company": "4S", "items": [dict(item_code="X", warehouse="Stores", **row) for row in rows],
+		})
+		self.mod.ensure_negative_stock_for_doc(doc)
+		return self.site.find("Item", "X").allow_negative_stock == 1
+
+	def test_pack_sale_counts_stock_units(self):
+		self.assertTrue(self.flagged(10, dict(qty=2, uom="Box", conversion_factor=12, stock_qty=24)))
+
+	def test_stock_qty_derived_when_missing(self):
+		self.assertTrue(self.flagged(10, dict(qty=2, uom="Box", conversion_factor=12)))
+
+	def test_rows_of_one_item_are_summed(self):
+		self.assertTrue(self.flagged(10, dict(qty=6, conversion_factor=1, stock_qty=6), dict(qty=6, conversion_factor=1, stock_qty=6)))
+
+	def test_enough_stock_flags_nothing(self):
+		self.assertFalse(self.flagged(30, dict(qty=2, uom="Box", conversion_factor=12, stock_qty=24)))

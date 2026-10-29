@@ -94,7 +94,10 @@ def ensure_negative_stock_for_doc(doc) -> None:
 			)
 		}
 
-	items_to_flag: list[str] = []
+	# Stock-UOM quantity leaving each (item, warehouse): the balance and the
+	# stock ledger are in stock units, a pack line's qty is not, and two rows
+	# of one item draw on the same balance.
+	outflow: dict[tuple[str, str], float] = {}
 	for row in (doc.get("items") or []):
 		item_code = getattr(row, "item_code", None)
 		if not item_code:
@@ -107,10 +110,15 @@ def ensure_negative_stock_for_doc(doc) -> None:
 		if item_code in bom_items:
 			continue
 		warehouse = getattr(row, "warehouse", None) or doc.get("set_warehouse")
-		qty = flt(getattr(row, "qty", 0))
+		qty = flt(getattr(row, "stock_qty", 0)) or flt(getattr(row, "qty", 0)) * (
+			flt(getattr(row, "conversion_factor", 1)) or 1.0
+		)
 		if qty <= 0 or not warehouse:
 			continue
+		outflow[(item_code, warehouse)] = outflow.get((item_code, warehouse), 0.0) + qty
 
+	items_to_flag: list[str] = []
+	for (item_code, warehouse), qty in outflow.items():
 		is_stock = frappe.db.get_value("Item", item_code, "is_stock_item")
 		if not is_stock:
 			continue
