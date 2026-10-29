@@ -526,7 +526,10 @@ class TestSweep174CheckinPermission(SweepCase):
 	def setUp(self):
 		super().setUp()
 		settings = stub(SETTINGS_MODULE, get_settings=lambda: _dict())
-		self.mod = self.load("checkin_handler.py", {SETTINGS_MODULE: settings})
+		self.user_permissions = {}
+		user_permission = stub("frappe.core.doctype.user_permission.user_permission",
+		                       get_user_permissions=lambda user=None: self.user_permissions)
+		self.mod = self.load("checkin_handler.py", {SETTINGS_MODULE: settings, user_permission.__name__: user_permission})
 		self.site.add("Employee", name="HR-EMP-4S", company="4S Industries Limited")
 		self.site.add("Employee", name="HR-EMP-VOX", company="Vox Lounge Nansana")
 
@@ -556,6 +559,20 @@ class TestSweep174CheckinPermission(SweepCase):
 			self.punch("HR-EMP-VOX")
 		self.assertEqual(self.site.rows("Employee Checkin"), [])
 		self.assertEqual(self.punch()["status"], "created")
+
+	def test_restricted_caller_cannot_tell_unknown_ids_from_other_companies(self):
+		# review r2: 200 unknown_employee vs 403 was an oracle for which IDs exist elsewhere
+		self.company_user_permission()
+		self.user_permissions = {"Company": [{"doc": "4S Industries Limited"}]}
+		refusals = []
+		for employee in ("HR-EMP-VOX", "HR-EMP-NONE"):
+			with self.assertRaises(PermissionError) as caught:
+				self.punch(employee)
+			refusals.append(str(caught.exception).replace(employee, "<id>"))
+		self.assertEqual(refusals[0], refusals[1])
+
+	def test_unrestricted_device_user_still_gets_unknown_employee(self):
+		self.assertEqual(self.punch("HR-EMP-NONE")["status"], "unknown_employee")
 
 	def test_duplicate_of_other_company_punch_is_refused(self):
 		self.site.add("Employee Checkin", name="CHK-1", employee="HR-EMP-VOX", time=datetime(2026, 10, 28, 9))

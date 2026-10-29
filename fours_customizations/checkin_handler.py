@@ -82,13 +82,18 @@ def add_checkin(
 
 	employee = _resolve_employee(employee_field_value, employee_fieldname)
 	if not employee:
+		# A caller with limited Employee access gets the out-of-scope refusal,
+		# so the answer never tells which IDs exist in other companies.
+		if _employee_access_limited():
+			_refuse_employee(employee_field_value)
 		# Device user with no Employee record — acknowledge so the
 		# integration does not retry forever, but report it clearly.
 		return {"status": "unknown_employee", "employee_field_value": employee_field_value}
 
 	# Employee Checkin has no Company link, so Company User Permissions only
 	# bite through the Employee record itself.
-	frappe.has_permission("Employee", "read", doc=employee, throw=True)
+	if not frappe.has_permission("Employee", "read", doc=employee):
+		_refuse_employee(employee_field_value)
 
 	time = get_datetime(timestamp)
 	checkin = frappe.new_doc("Employee Checkin")
@@ -127,6 +132,17 @@ def add_checkin(
 		"attendance": checkin.attendance,
 		"employee": employee,
 	}
+
+
+def _employee_access_limited():
+	"""True unless the caller may read every Employee (role, no User Permissions)."""
+	from frappe.core.doctype.user_permission.user_permission import get_user_permissions
+
+	return not frappe.has_permission("Employee", "read") or bool(get_user_permissions())
+
+
+def _refuse_employee(value):
+	frappe.throw(_("Not permitted to record punches for {0}").format(value), frappe.PermissionError)
 
 
 def _resolve_employee(value, fieldname=None):
