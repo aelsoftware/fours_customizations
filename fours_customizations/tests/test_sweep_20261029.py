@@ -255,6 +255,13 @@ class FakeSite:
 		out = [_dict({f.split(" as ")[-1]: row.get(f.split(" as ")[0]) for f in fields}) for row in found]
 		return out[:limit] if limit else out
 
+	def get_list(self, doctype, filters=None, fields=None, pluck=None, **kw):
+		"""get_all limited to the rows the permission policy lets the user read (frappe.get_list)."""
+		readable = {row.name for row in self.rows(doctype) if self.permit(doctype, "read", row, self.user)}
+		names = set(self.get_all(doctype, filters=filters, pluck="name"))
+		return self.get_all(doctype, filters={**(filters or {}), "name": ["in", list(names & readable)]},
+		                    fields=fields, pluck=pluck, **kw)
+
 	def get_value(self, doctype, filters=None, fieldname="name", as_dict=False, for_update=False, **_kw):
 		if filters is None:
 			filters = doctype
@@ -341,7 +348,7 @@ class FakeSite:
 		frappe.msgprint = lambda msg, *a, **k: self.messages.append(msg)
 		frappe.log_error = lambda *a, **k: self.errors.append(a)
 		frappe.get_traceback = lambda *a, **k: "traceback"
-		frappe.get_all = frappe.get_list = self.get_all
+		frappe.get_all, frappe.get_list = self.get_all, self.get_list
 		frappe.get_doc, frappe.new_doc = self.get_doc, self.new_doc
 		frappe.get_meta = self.get_meta
 		frappe.get_cached_value = lambda doctype, name, field: self.get_value(doctype, name, field)
@@ -905,3 +912,14 @@ class TestSweep261OutstandingCurrency(SweepCase):
 		db.execute("INSERT INTO `tabGL Entry` VALUES ('Debtors', 'Customer', 'C', '4S', 0, 5000, 1000, 5000, 1000)")
 		rows = {r.account: (r.balance, r.currency) for r in mod._get_customer_outstanding("C", "4S")}
 		self.assertEqual(rows, {"Debtors USD": (100, "USD"), "Debtors": (4000, "UGX")})
+
+
+class TestSweep195AuditScope(ChainCase):
+	"""#195 (minor): the broken-chain audit lists only Delivery Notes the caller may read."""
+
+	def test_other_company_notes_not_listed(self):
+		for name, company in (("DN-4S", "4S"), ("DN-VOX", "Vox Lounge")):
+			self.site.add("Delivery Note", name=name, docstatus=1, is_return=0, company=company, customer="C",
+			              posting_date="2026-10-01", grand_total=10, per_billed=0)
+		self.site.permit = lambda doctype, ptype, doc, user: doctype != "Delivery Note" or doc.company == "4S"
+		self.assertEqual([r["delivery_note"] for r in self.mod.get_broken_sales_chains()], ["DN-4S"])

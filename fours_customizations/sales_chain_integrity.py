@@ -719,10 +719,12 @@ def get_broken_sales_chains(company: str | None = None) -> list[dict]:
 	if company:
 		filters["company"] = company
 
-	dns = frappe.get_all(
+	# get_list: only notes the caller may read (role and company User Permissions).
+	dns = frappe.get_list(
 		"Delivery Note",
 		filters=filters,
 		fields=["name", "company", "customer", "posting_date", "grand_total", "per_billed"],
+		limit_page_length=0,
 	)
 	if not dns:
 		return []
