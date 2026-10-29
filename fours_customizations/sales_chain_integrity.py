@@ -57,9 +57,11 @@ def submitted_delivery_notes_for_invoice(invoice_name: str) -> list[str]:
 	if not invoice_name:
 		return []
 
+	# An amendment's goods may sit on a note made against an earlier invoice
+	# of its chain (see invoice_amendment_chain).
 	dn_names = frappe.get_all(
 		"Delivery Note Item",
-		filters={"against_sales_invoice": invoice_name},
+		filters={"against_sales_invoice": ["in", invoice_amendment_chain(invoice_name)]},
 		pluck="parent",
 		distinct=True,
 	)

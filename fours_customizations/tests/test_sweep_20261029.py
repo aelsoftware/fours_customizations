@@ -651,3 +651,13 @@ class TestSweep182PartialReturnGuard(ChainCase):
 		self.note("DN-B", [("X", 5)], invoice="SI-X")
 		self.note("DN-R", [("X", -5)], invoice="SI-X", return_against="DN-A")
 		self.assertEqual(self.mod.submitted_delivery_notes_for_invoice("SI-X"), ["DN-B"])
+
+
+class TestSweep253AmendedInvoiceGuard(ChainCase):
+	"""#253 (minor): a note made against an earlier invoice of the amendment chain still blocks the amendment's cancel."""
+
+	def test_note_on_amended_from_invoice_blocks(self):
+		self.site.add("Sales Invoice", name="SI-1", docstatus=2, amended_from=None)
+		self.site.add("Sales Invoice", name="SI-1-1", docstatus=1, amended_from="SI-1")
+		self.note("DN-A", [("X", 5)], invoice="SI-1")
+		self.assertEqual(self.mod.submitted_delivery_notes_for_invoice("SI-1-1"), ["DN-A"])
