@@ -145,7 +145,7 @@ def _sync_sales_invoice_return(dn):
 		if not si_name and item.get("dn_detail"):
 			# Delivery-first: the invoice was made from the note, so only the
 			# invoice row points back (Sales Invoice Item.dn_detail).
-			si_name, si_detail = _invoice_row_billing(item.dn_detail)
+			si_name, si_detail = _invoice_row_billing(item.dn_detail, dn.company, dn.customer)
 		# Only the invoice is essential. A row may carry no si_detail at all —
 		# older notes often do not — and dropping it here is why a return could
 		# credit nothing: the item code is enough to find the row it reverses.
@@ -170,7 +170,7 @@ def _sync_sales_invoice_return(dn):
 			f"Return {dn.name}, so no credit note was raised for them. If they were "
 			f"billed, the customer still has to be credited."
 		)
-		frappe.log_error(note, "4S DN return: rows without an invoice")
+		frappe.log_error(title="4S DN return: rows without an invoice", message=note)
 		frappe.msgprint(note, indicator="orange", alert=True)
 
 	for si_name, si_item_qty in qty_by_si_item.items():
@@ -199,10 +199,10 @@ def _sync_sales_invoice_return(dn):
 		)
 
 
-def _invoice_row_billing(dn_detail):
-	"""(invoice, invoice row) of the one submitted forward Sales Invoice row that
-	billed Delivery Note row *dn_detail*, else (None, None) — a row billed by
-	several invoices is not guessed at."""
+def _invoice_row_billing(dn_detail, company, customer):
+	"""(invoice, invoice row) of the one submitted forward Sales Invoice row of
+	*company* / *customer* that billed Delivery Note row *dn_detail*, else
+	(None, None) — a row billed by several invoices is not guessed at."""
 	rows = frappe.get_all(
 		"Sales Invoice Item",
 		filters={"dn_detail": dn_detail, "docstatus": 1},
@@ -213,7 +213,13 @@ def _invoice_row_billing(dn_detail):
 	forward = set(
 		frappe.get_all(
 			"Sales Invoice",
-			filters={"name": ["in", list({row.parent for row in rows})], "is_return": 0, "docstatus": 1},
+			filters={
+				"name": ["in", list({row.parent for row in rows})],
+				"company": company,
+				"customer": customer,
+				"is_return": 0,
+				"docstatus": 1,
+			},
 			pluck="name",
 		)
 	)

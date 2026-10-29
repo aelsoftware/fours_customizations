@@ -346,7 +346,7 @@ class FakeSite:
 		frappe.whitelist = lambda *a, **k: (a[0] if a and callable(a[0]) else (lambda fn: fn))
 		frappe.throw = self.throw
 		frappe.msgprint = lambda msg, *a, **k: self.messages.append(msg)
-		frappe.log_error = lambda *a, **k: self.errors.append(a)
+		frappe.log_error = lambda *a, **k: self.errors.append(dict(zip(("title", "message"), a), **k))
 		frappe.get_traceback = lambda *a, **k: "traceback"
 		frappe.get_all, frappe.get_list = self.get_all, self.get_list
 		frappe.get_doc, frappe.new_doc = self.get_doc, self.new_doc
@@ -763,7 +763,7 @@ class TestSweep184DeliveryFirstReturn(DeliveryNoteCase):
 		super().setUp()
 		self.make = self.enterContext(patch.object(self.mod, "_create_and_submit_si_return"))
 		self.site.add("Delivery Note Item", name="DNI-1", parent="DN-1", item_code="X", against_sales_invoice=None, si_detail=None)
-		self.site.add("Sales Invoice", name="SI-1", docstatus=1, is_return=0)
+		self.site.add("Sales Invoice", name="SI-1", docstatus=1, is_return=0, company="4S", customer="C")
 		self.site.add("Sales Invoice Item", name="SII-1", parent="SI-1", item_code="X", delivery_note="DN-1", dn_detail="DNI-1", docstatus=1)
 		# a credit note copied from SI-1 keeps the forward dn_detail: never the invoice to credit
 		self.site.add("Sales Invoice", name="SI-RET-0", docstatus=1, is_return=1)
@@ -771,7 +771,8 @@ class TestSweep184DeliveryFirstReturn(DeliveryNoteCase):
 
 	def ret(self, dn_detail="DNI-1"):
 		return FakeDoc(self.site, "Delivery Note", {
-			"name": "DN-RET-1", "is_return": 1, "return_against": "DN-1", "custom_remarks": "",
+			"name": "DN-RET-1", "is_return": 1, "return_against": "DN-1", "custom_remarks": "", "company": "4S",
+			"customer": "C",
 			"items": [{"name": "RET-ROW-1", "item_code": "X", "qty": -2, "dn_detail": dn_detail}],
 		})
 
@@ -781,7 +782,7 @@ class TestSweep184DeliveryFirstReturn(DeliveryNoteCase):
 		self.make.assert_called_once_with(dn, "SI-1", {"SII-1": -2}, {"SII-1": "RET-ROW-1"})
 
 	def test_two_invoices_for_the_row_are_reported_not_guessed(self):
-		self.site.add("Sales Invoice", name="SI-2", docstatus=1, is_return=0)
+		self.site.add("Sales Invoice", name="SI-2", docstatus=1, is_return=0, company="4S", customer="C")
 		self.site.add("Sales Invoice Item", name="SII-2", parent="SI-2", item_code="X", dn_detail="DNI-1", docstatus=1)
 		self.mod._sync_sales_invoice_return(self.ret())
 		self.make.assert_not_called()
@@ -792,6 +793,17 @@ class TestSweep184DeliveryFirstReturn(DeliveryNoteCase):
 		self.mod._sync_sales_invoice_return(self.ret("DNI-9"))
 		self.make.assert_not_called()
 		self.assertTrue(self.site.messages)
+		(error,) = self.site.errors
+		self.assertEqual(error["title"], "4S DN return: rows without an invoice")
+		self.assertIn("DN-RET-1", error["message"])
+
+	def test_invoice_of_another_customer_or_company_is_not_credited(self):
+		# the row ids match, but the credit note must go to the return's own customer and company
+		self.site.find("Sales Invoice", "SI-1").update(customer="OTHER")
+		self.mod._sync_sales_invoice_return(self.ret())
+		self.site.find("Sales Invoice", "SI-1").update(customer="C", company="Vox")
+		self.mod._sync_sales_invoice_return(self.ret())
+		self.make.assert_not_called()
 
 
 class TestSweep186ShiftHistory(SweepCase):
