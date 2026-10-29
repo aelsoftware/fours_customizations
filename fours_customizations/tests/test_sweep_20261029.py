@@ -606,3 +606,48 @@ class TestSweep177CommissionCurrency(CommissionCase):
 		self.pe("PE-USD", "Receive", "Customer", 100, base=370_000)
 		self.pe("PE-USD-REFUND", "Pay", "Customer", 10, base=37_000)
 		self.assertEqual(self.summary()["payment_entry_payments"], 333_000)
+
+
+class ChainCase(SweepCase):
+	def setUp(self):
+		super().setUp()
+		self.mod = self.load("sales_chain_integrity.py")
+
+	def note(self, name, rows, invoice=None, return_against=None, docstatus=1):
+		self.site.add(
+			"Delivery Note", name=name, docstatus=docstatus, is_return=int(bool(return_against)), return_against=return_against
+		)
+		for item_code, stock_qty in rows:
+			self.site.add(
+				"Delivery Note Item", parent=name, item_code=item_code, qty=stock_qty, stock_qty=stock_qty,
+				against_sales_invoice=invoice, docstatus=docstatus,
+			)
+
+
+class TestSweep182PartialReturnGuard(ChainCase):
+	"""#182: a forward Delivery Note stops blocking its invoice's cancellation only when every unit came back."""
+
+	def test_partial_return_keeps_the_guard(self):
+		self.note("DN-A", [("X", 100)], invoice="SI-X")
+		self.note("DN-R", [("X", -1)], invoice="SI-X", return_against="DN-A")
+		self.assertEqual(self.mod.submitted_delivery_notes_for_invoice("SI-X"), ["DN-A"])
+		with self.assertRaises(ValidationError):
+			self.mod.validate_no_submitted_delivery_note(SimpleNamespace(name="SI-X", is_return=0, flags=_dict(), get=lambda k: 0))
+
+	def test_one_item_of_two_returned_keeps_the_guard(self):
+		self.note("DN-A", [("X", 5), ("Y", 3)], invoice="SI-X")
+		self.note("DN-R", [("X", -5)], invoice="SI-X", return_against="DN-A")
+		self.assertEqual(self.mod.submitted_delivery_notes_for_invoice("SI-X"), ["DN-A"])
+
+	def test_full_return_in_several_notes_frees_the_invoice(self):
+		self.note("DN-A", [("X", 5), ("X", 5), ("Y", 3)], invoice="SI-X")
+		self.note("DN-R1", [("X", -6)], invoice="SI-X", return_against="DN-A")
+		self.note("DN-R2", [("X", -4), ("Y", -3)], invoice="SI-X", return_against="DN-A")
+		self.note("DN-R3", [("Y", -3)], invoice="SI-X", return_against="DN-A", docstatus=2)  # cancelled: ignored
+		self.assertEqual(self.mod.submitted_delivery_notes_for_invoice("SI-X"), [])
+
+	def test_unreturned_note_still_blocks(self):
+		self.note("DN-A", [("X", 5)], invoice="SI-X")
+		self.note("DN-B", [("X", 5)], invoice="SI-X")
+		self.note("DN-R", [("X", -5)], invoice="SI-X", return_against="DN-A")
+		self.assertEqual(self.mod.submitted_delivery_notes_for_invoice("SI-X"), ["DN-B"])

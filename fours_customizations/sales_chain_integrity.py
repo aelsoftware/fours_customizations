@@ -49,9 +49,10 @@ def submitted_delivery_notes_for_invoice(invoice_name: str) -> list[str]:
 	"""Forward Delivery Notes that are still submitted and still holding stock
 	for *invoice_name*.
 
-	A note whose goods have come back (a submitted return points at it) no
-	longer holds anything, so it is excluded — cancelling the invoice is
-	legitimate at that point.
+	A note whose goods have all come back (submitted returns against it net
+	every item to zero) no longer holds anything, so it is excluded —
+	cancelling the invoice is legitimate at that point. A partial return
+	leaves the note blocking: the rest of the goods are still out.
 	"""
 	if not invoice_name:
 		return []
@@ -73,14 +74,31 @@ def submitted_delivery_notes_for_invoice(invoice_name: str) -> list[str]:
 	if not live:
 		return []
 
-	returned = set(
-		frappe.get_all(
+	return_of = {
+		row.name: row.return_against
+		for row in frappe.get_all(
 			"Delivery Note",
 			filters={"return_against": ["in", live], "is_return": 1, "docstatus": 1},
-			pluck="return_against",
+			fields=["name", "return_against"],
 		)
-	)
-	return sorted(name for name in live if name not in returned)
+	}
+	if not return_of:
+		return sorted(live)
+
+	# Net the stock quantities per forward note and item (return rows are negative).
+	out = {}
+	for row in frappe.get_all(
+		"Delivery Note Item",
+		filters={"parent": ["in", [*live, *return_of]]},
+		fields=["parent", "item_code", "stock_qty"],
+	):
+		key = (return_of.get(row.parent, row.parent), row.item_code)
+		out[key] = out.get(key, 0) + flt(row.stock_qty)
+	fully_returned = {
+		name for name in set(return_of.values())
+		if not any(flt(qty, 6) > 0 for (note, _item), qty in out.items() if note == name)
+	}
+	return sorted(name for name in live if name not in fully_returned)
 
 
 def invoice_amendment_chain(invoice_name: str) -> list[str]:
