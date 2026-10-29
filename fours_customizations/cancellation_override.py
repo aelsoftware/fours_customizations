@@ -122,6 +122,11 @@ def _try_auto_cancel_invoice(name, reason):
 
     if not reason or not reason.strip():
         frappe.throw(_("Reason is required"))
+    min_length = _min_reason_length()
+    if min_length and len(reason.strip()) < min_length:
+        frappe.throw(
+            _("Cancellation reason must be at least {0} characters long").format(min_length)
+        )
 
     si = frappe.get_doc(INVOICE_DOCTYPE, name)
 
@@ -161,6 +166,16 @@ def _try_auto_cancel_invoice(name, reason):
             "Delivery Note removed."
         ).format(si.name)
     }
+
+
+def _min_reason_length():
+    """The request flow's minimum reason length (0 on a cancellation_requests
+    that predates the setting)."""
+    try:
+        from cancellation_requests.utils import get_min_reason_length
+    except ImportError:
+        return 0
+    return get_min_reason_length()
 
 
 def _get_draft_delivery_notes(invoice_name):

@@ -493,6 +493,13 @@ class TestSweep173AutoCancelAuthz(SweepCase):
 		self.assertIn(("Sales Invoice", "read", "SI-4S-1"), seen)
 
 
+	def test_reason_shorter_than_the_request_minimum_is_refused(self):
+		sys.modules["cancellation_requests.utils"].get_min_reason_length = lambda: 10
+		with self.assertRaises(ValidationError):
+			self.mod._try_auto_cancel_invoice("SI-4S-1", "  short   ")
+		self.perform.assert_not_called()
+		self.assertIn("automatically cancelled", self.mod._try_auto_cancel_invoice("SI-4S-1", "wrong customer")["message"])
+
 	def test_legacy_teardown_keeps_receipts_like_the_draft_note_path(self):
 		# #258: an invoice from before native DN -> SO linking is torn down here, not by the note's on_trash
 		chain = MagicMock()
