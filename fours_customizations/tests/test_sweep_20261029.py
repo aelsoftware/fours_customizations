@@ -689,3 +689,29 @@ class TestSweep247RelinkPermission(ChainCase):
 	def test_permitted_relink(self):
 		self.assertEqual(self.mod.relink_delivery_note("DN-A", "SI-1-1")["rows_updated"], 1)
 		self.assertEqual(self.site.find("Delivery Note Item", "DNI-1").against_sales_invoice, "SI-1-1")
+
+
+class DeliveryNoteCase(SweepCase):
+	def setUp(self):
+		super().setUp()
+		self.mod = self.load("delivery_note_handler.py")
+
+
+class TestSweep183UpliftSalesPerson(DeliveryNoteCase):
+	"""#183: the price-uplift credit note carries the return's Sales Person (the 4S mandatory-salesperson guard)."""
+
+	def uplift(self, **si_return):
+		values = dict(name="SINV-RET-1", company="4S Industries Limited", customer="C", currency="UGX",
+		              conversion_rate=1, posting_date="2026-10-28", posting_time="10:00:00")
+		values.update(si_return)
+		row = {"item_code": "X", "qty": -2, "rate": 100, "uom": "Nos", "conversion_factor": 1}
+		self.mod._credit_price_uplift(SimpleNamespace(name="DN-RET-1"), "SI-1", FakeDoc(self.site, "Sales Invoice", values), [row])
+		(extra,) = [r for r in self.site.rows("Sales Invoice") if r.custom_credits_delivery_return == "DN-RET-1"]
+		return extra
+
+	def test_sales_person_copied_from_return(self):
+		self.assertEqual(self.uplift(custom_sales_person="SP-1").custom_sales_person, "SP-1")
+
+	def test_single_sales_team_person_used(self):
+		team = [{"sales_person": "SP-2", "allocated_percentage": 100}]
+		self.assertEqual(self.uplift(sales_team=team).custom_sales_person, "SP-2")

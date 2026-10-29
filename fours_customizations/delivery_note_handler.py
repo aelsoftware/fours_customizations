@@ -305,6 +305,17 @@ def _credit_price_uplift(dn, si_name, si_return, uplift):
 	extra = frappe.new_doc("Sales Invoice")
 	extra.company = si_return.company
 	extra.customer = si_return.customer
+	# The 4S mandatory-salesperson guard validates this system-raised credit
+	# note too: carry the return's Sales Person (price_adjustment does the same).
+	sales_person = si_return.get("custom_sales_person")
+	if not sales_person:
+		team = list(dict.fromkeys(
+			row.sales_person for row in (si_return.get("sales_team") or []) if row.sales_person
+		))
+		if len(team) == 1:
+			sales_person = team[0]
+	if sales_person:
+		extra.custom_sales_person = sales_person
 	extra.currency = si_return.currency
 	extra.conversion_rate = flt(si_return.conversion_rate) or 1.0
 	extra.is_return = 1
