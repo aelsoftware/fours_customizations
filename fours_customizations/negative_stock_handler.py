@@ -307,6 +307,8 @@ def reconcile_items(item_codes) -> str:
 	"""Create a draft Stock Reconciliation for the given items and return its name."""
 	import json
 
+	frappe.has_permission("Stock Reconciliation", "create", throw=True)
+
 	if isinstance(item_codes, str):
 		item_codes = json.loads(item_codes)
 	if not item_codes:
@@ -344,8 +346,7 @@ def reconcile_items(item_codes) -> str:
 	if not sr.items:
 		frappe.throw("Nothing to reconcile.")
 
-	sr.flags.ignore_permissions = True
-	sr.insert(ignore_permissions=True)
+	sr.insert()  # the caller's own draft: role and company User Permissions apply
 	frappe.db.commit()
 	return sr.name
 

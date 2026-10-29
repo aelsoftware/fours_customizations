@@ -822,3 +822,32 @@ class TestSweep209NegativeStockUom(SweepCase):
 
 	def test_enough_stock_flags_nothing(self):
 		self.assertFalse(self.flagged(30, dict(qty=2, uom="Box", conversion_factor=12, stock_qty=24)))
+
+
+class TestSweep193ReconcileItemsPermission(SweepCase):
+	"""#193 (minor): the Reconcile All draft is the caller's own Stock Reconciliation insert, permission-checked."""
+
+	def setUp(self):
+		super().setUp()
+		self.mod = self.load("negative_stock_handler.py", {
+			SETTINGS_MODULE: stub(SETTINGS_MODULE, get_settings=lambda: _dict(default_company="4S", default_warehouse="Stores")),
+			"fours_customizations.notifications": stub("fours_customizations.notifications", send_email=None, send_slack=None),
+			"fours_customizations.vox_kitchen_recipes": stub("fours_customizations.vox_kitchen_recipes", MENU=()),
+		})
+		self.site.add("Bin", item_code="X", warehouse="Stores", actual_qty=-3, valuation_rate=10)
+
+	def test_user_without_create_is_refused(self):
+		self.site.permit = lambda doctype, ptype, doc, user: doctype != "Stock Reconciliation"
+		with self.assertRaises(PermissionError):
+			self.mod.reconcile_items('["X"]')
+		self.assertEqual(self.site.rows("Stock Reconciliation"), [])
+
+	def test_company_refused_at_document_level(self):
+		self.site.permit = lambda doctype, ptype, doc, user: doc is None
+		with self.assertRaises(PermissionError):
+			self.mod.reconcile_items(["X"])
+		self.assertEqual(self.site.rows("Stock Reconciliation"), [])
+
+	def test_permitted_user_gets_the_draft(self):
+		self.assertTrue(self.mod.reconcile_items(["X"]))
+		self.assertEqual(len(self.site.rows("Stock Reconciliation")), 1)
