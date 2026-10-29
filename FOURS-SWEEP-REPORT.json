@@ -1,0 +1,318 @@
+{
+ "id": "FOURS-SWEEP-20261029",
+ "branch": "fix/fours-sweep-20261029",
+ "base": "a75b333f1d0733784e4b7fdac8998422e80c2276 (production, feat/kit-attend-hooks-ps)",
+ "worktree": "/opt/build/ent-fours-wt/sweep-20261029",
+ "majors": [
+  {
+   "id": 165,
+   "severity": "major",
+   "file": "fours_customizations/landed_cost_handler.py",
+   "root_cause": "_sync_item_price fetched selling Item Prices without uom and set every row, carton rows included, to the voucher's per-stock-unit New Selling Price; the created row had no uom.",
+   "fix": "landed_cost_handler.py:63-102 (_sync_item_price): rows in the stock UOM or with no UOM get new_price; a row in another UOM gets new_price x its UOM Conversion Detail factor (ERPNext's derivation, as quick_price.effective_price); a row in a UOM the item has no factor for is left alone; a created price carries uom = stock_uom. Rows with customer/batch/validity windows are still overwritten as before (unchanged behaviour, not part of this finding).",
+   "commit": "f11ea5a",
+   "test": "fours_customizations/tests/test_sweep_20261029.py::TestSweep165LandedCostUom (3 tests) + bench test test_price_lists.py::test_landed_cost_carton_price",
+   "red_first": "3/3 FAIL at base (box row 1100 instead of 13200; unknown-UOM row overwritten; created row uom None). red evidence: the final test module run against the a75b333 production files (/opt/build/ent-fours-wt/sweep-20261029-evidence/final-module-at-base.txt)",
+   "bench": "Run test_price_lists (incl. the new test_landed_cost_carton_price) on the lab; submit a real LCV for an item with Nos + Box Item Prices and check the till's carton price (kit_pos item_uom) afterwards."
+  },
+  {
+   "id": 173,
+   "severity": "major",
+   "file": "fours_customizations/cancellation_override.py",
+   "root_cause": "_try_auto_cancel_invoice fast-tracked any submitted invoice with a draft Delivery Note for any logged-in user and cancelled it (plus DN delete and SO teardown) under ignore_permissions; no read/company check.",
+   "fix": "cancellation_override.py:128-132: frappe.has_permission('Sales Invoice', 'read', doc=si) (role + company User Permissions) before any side effect; a requester who fails it is deferred (return None) to the original cancellation_requests flow, the same as any non-fast-track invoice. No auto-cancel-role requirement was added (that would change who may use the fast track at all: open question).",
+   "commit": "cd384ae",
+   "test": "fours_customizations/tests/test_sweep_20261029.py::TestSweep173AutoCancelAuthz (2 tests)",
+   "red_first": "2/2 FAIL at base (cross-company requester got the invoice cancelled; no read check made). red evidence: the final test module run against the a75b333 production files (/opt/build/ent-fours-wt/sweep-20261029-evidence/final-module-at-base.txt)",
+   "bench": "As a Vox-only user (Company User Permission) and as the store keeper without Sales Invoice access, call request_cancellation on a 4S invoice with a draft DN: invoice must stay submitted and the ordinary request flow must answer; as the 4S sales user it must still auto-cancel."
+  },
+  {
+   "id": 174,
+   "severity": "major",
+   "file": "fours_customizations/checkin_handler.py",
+   "root_cause": "add_checkin (whitelisted) inserted Employee Checkin with ignore_permissions for any user and any Employee; the after_insert projection then rewrote the submitted Attendance payroll reads.",
+   "fix": "checkin_handler.py:78-118: frappe.has_permission('Employee Checkin','create', throw=True) before resolving the employee; the checkin doc is built and checkin.check_permission('create') (Employee/Company User Permissions) runs before the duplicate lookup; insert no longer elevated (as hrms add_log_based_on_employee_field). The after_insert projection keeps its own system rights.",
+   "commit": "b6cab0c",
+   "test": "fours_customizations/tests/test_sweep_20261029.py::TestSweep174CheckinPermission (4 tests)",
+   "red_first": "4/4 FAIL at base (no PermissionError, insert elevated). red evidence: the final test module run against the a75b333 production files (/opt/build/ent-fours-wt/sweep-20261029-evidence/final-module-at-base.txt)",
+   "bench": "CRITICAL before deploy: confirm the user behind the biometric sync token (biometric-sync-src SendBiometricLogsToERP.php) holds Employee Checkin create (HR User/HR Manager/System Manager or Employee) and has no Company User Permission that excludes the employees it posts; else punches 403 and the PHP side retries until roles are fixed. Then post a punch as that user (created), as a till user with Employee role for another employee (403), and as a Vox-only HR user for a 4S employee (403)."
+  },
+  {
+   "id": 178,
+   "severity": "major",
+   "file": "fours_customizations/commission_handler.py, fours_customizations/payment_entry_handler.py",
+   "root_cause": "The commission query's Customer restriction applied only to Pay; every Receive (supplier refund, employee repayment) with a sales_person counted, and payment_entry_handler.validate forced a sales_person on every Receive.",
+   "fix": "commission_handler.py:84-85: pe.party_type = 'Customer' AND pe.payment_type IN ('Receive','Pay'); payment_entry_handler.py:37-43: sales_person required only when party_type == 'Customer'.",
+   "commit": "942f80d",
+   "test": "fours_customizations/tests/test_sweep_20261029.py::TestSweep178SupplierRefundCommission (2 tests; real SQL on SQLite)",
+   "red_first": "FAIL 1110000 != 90000 and ERROR 'Sales Person is required' for a supplier refund at base. red evidence: the final test module run against the a75b333 production files (/opt/build/ent-fours-wt/sweep-20261029-evidence/final-module-at-base.txt)",
+   "bench": "Generate a Salary Slip for a period with a supplier-refund Receive PE carrying a sales_person: Sales Commission must exclude it; save a supplier-refund Receive PE on 4S without sales_person (must save)."
+  },
+  {
+   "id": 182,
+   "severity": "major",
+   "file": "fours_customizations/sales_chain_integrity.py",
+   "root_cause": "submitted_delivery_notes_for_invoice dropped a forward DN as soon as any submitted return pointed at it, with no quantity comparison.",
+   "fix": "sales_chain_integrity.py:47-104: stock_qty netted per forward note and item across its submitted returns; a note stops blocking only when every item is fully back. Used by the Sales Invoice before_cancel guard and by delivery_note_handler._cancel_sales_invoice.",
+   "commit": "4ee20d3",
+   "test": "fours_customizations/tests/test_sweep_20261029.py::TestSweep182PartialReturnGuard (4 tests: 2 red, 2 regression pins)",
+   "red_first": "partial-return and one-item-of-two cases FAIL ([] != ['DN-A']) at base. red evidence: the final test module run against the a75b333 production files (/opt/build/ent-fours-wt/sweep-20261029-evidence/final-module-at-base.txt)",
+   "bench": "SI 100 units -> DN submitted -> return 1 -> create a second draft DN from the SI and delete it: SI must stay submitted (orange alert); desk cancel of the SI must be refused; after returning all 100 it must cancel."
+  },
+  {
+   "id": 183,
+   "severity": "major",
+   "file": "fours_customizations/delivery_note_handler.py",
+   "root_cause": "_credit_price_uplift built the standalone 4S credit note without custom_sales_person/sales_team, so sales_invoice_handler.before_validate threw and on_submit swallowed it.",
+   "fix": "delivery_note_handler.py:350-360: the uplift note takes si_return.custom_sales_person, falling back to its single Sales Team person (as price_adjustment._apply_common). Atomicity (base credit submitted before the uplift is built; on_submit swallowing) is unchanged: see open questions.",
+   "commit": "0ca7989",
+   "test": "fours_customizations/tests/test_sweep_20261029.py::TestSweep183UpliftSalesPerson (2 tests)",
+   "red_first": "2/2 FAIL at base (custom_sales_person None). red evidence: the final test module run against the a75b333 production files (/opt/build/ent-fours-wt/sweep-20261029-evidence/final-module-at-base.txt)",
+   "bench": "4S: invoice, Adjust Price upwards, return goods via DN Return: both the base credit note and the uplift credit note must be submitted, the uplift carrying the invoice's Sales Person."
+  },
+  {
+   "id": 184,
+   "severity": "major",
+   "file": "fours_customizations/delivery_note_handler.py",
+   "root_cause": "_sync_sales_invoice_return resolved the invoice only via against_sales_invoice/si_detail on the return or forward DN row; in the delivery-first flow only Sales Invoice Item.dn_detail points back, so nothing was credited, silently.",
+   "fix": "delivery_note_handler.py:145-148 + _invoice_row_billing (202-223): third lookup via the single submitted forward Sales Invoice row with dn_detail = the forward DN row (credit notes and rows billed by several invoices are not guessed at); delivery_note_handler.py:165-174: unresolved rows are logged (Error Log) and shown as an orange alert instead of skipped silently.",
+   "commit": "ae29c0f",
+   "test": "fours_customizations/tests/test_sweep_20261029.py::TestSweep184DeliveryFirstReturn (3 tests)",
+   "red_first": "3/3 FAIL at base (no credit, no message). red evidence: the final test module run against the a75b333 production files (/opt/build/ent-fours-wt/sweep-20261029-evidence/final-module-at-base.txt)",
+   "bench": "4S delivery-first: DN submitted -> Make Sales Invoice -> submit -> DN Return of part: credit note auto-raised against that SI at the right qty/rate; a return of an unbilled DN shows the orange alert and an Error Log."
+  },
+  {
+   "id": 186,
+   "severity": "major",
+   "file": "fours_customizations/employee_handler.py",
+   "root_cause": "_cancel_current_future_assignments cancelled every open-ended / still-running submitted Shift Assignment on a shift change, so salary_slip_handler._shift_assigned_dates (docstatus 1 only) lost every earlier day of the period.",
+   "fix": "employee_handler.py:109-134: an assignment that started before the change date is ended the day before (end_date is allow_on_submit; sa.save() runs HRMS on_update_after_submit date validation) and stays submitted; only assignments starting on/after the date are cancelled. Clearing the shift ends the running one yesterday.",
+   "commit": "e303c1e",
+   "test": "fours_customizations/tests/test_sweep_20261029.py::TestSweep186ShiftHistory (2 tests)",
+   "red_first": "2/2 FAIL at base (SA cancelled: docstatus 2, end_date None). red evidence: the final test module run against the a75b333 production files (/opt/build/ent-fours-wt/sweep-20261029-evidence/final-module-at-base.txt)",
+   "bench": "Change default_shift mid-month on an employee with an open-ended assignment: old SA submitted with end_date = yesterday, new SA from today, no overlap error; Salary Slip deductions include the days before the change; clearing the shift ends it yesterday. Check an SA linked to Employee Checkins can be saved with the end_date (cancel was refused for those before)."
+  },
+  {
+   "id": 209,
+   "severity": "major",
+   "file": "fours_customizations/negative_stock_handler.py",
+   "root_cause": "ensure_negative_stock_for_doc compared the Bin balance (stock UOM) with row.qty (selling UOM) and checked rows one by one.",
+   "fix": "negative_stock_handler.py:97-132: projection uses stock_qty (else qty x conversion_factor), summed per (item, warehouse) before comparing with the balance. BOM/Vox MENU exclusions untouched.",
+   "commit": "07a6fb3",
+   "test": "fours_customizations/tests/test_sweep_20261029.py::TestSweep209NegativeStockUom (4 tests: 3 red, 1 pin); the bench-only write-free U20/Vox guard tests (test_vox_negative_stock_guard, test_kit_bom_supersede, 30 tests) also pass under a stub runner at base and head",
+   "red_first": "3/3 FAIL at base (pack line and split rows not flagged). red evidence: the final test module run against the a75b333 production files (/opt/build/ent-fours-wt/sweep-20261029-evidence/final-module-at-base.txt)",
+   "bench": "Kit POS till sale of a carton line (conversion_factor 12) with balance below 12 x qty but above qty, Stock Settings allow_negative_stock=0: the invoice materializes (item auto-flagged) instead of NegativeStockError."
+  },
+  {
+   "id": 258,
+   "severity": "major",
+   "file": "fours_customizations/delivery_note_handler.py, fours_customizations/sales_order_handler.py",
+   "root_cause": "_cancel_sales_order_chain(cancel_payments=False) still called so.cancel(), whose on_cancel hook cancelled every Receive Payment Entry with reference_no = SO regardless of the chain's decision.",
+   "fix": "delivery_note_handler.py:559-561 sets so.flags.keep_payment_entries = not cancel_payments before so.cancel(); sales_order_handler.py:228-231 on_cancel unlinks as before and returns early when the flag is set. Plain SO cancel and teardowns with cancel_payments=True unchanged.",
+   "commit": "5a6d653",
+   "test": "fours_customizations/tests/test_sweep_20261029.py::TestSweep258KeepPaymentOnDraftDelete (3 tests: 1 red, 2 pins)",
+   "red_first": "FAIL ['PE-1'] != [] at base. red evidence: the final test module run against the a75b333 production files (/opt/build/ent-fours-wt/sweep-20261029-evidence/final-module-at-base.txt)",
+   "bench": "4S SO with custom_include_payment submitted (PE created) -> delete the draft DN: SO cancelled, PE stays submitted (becomes an advance), no 'Payment Entry cancelled' message; desk cancel of an SO still cancels its PE."
+  }
+ ],
+ "minors_fixed": [
+  {
+   "id": 177,
+   "file": "fours_customizations/commission_handler.py",
+   "fix": "commission_handler.py:94-95: both CASE branches sum pe.base_paid_amount (company currency)",
+   "commit": "c7221ad",
+   "test": "fours_customizations/tests/test_sweep_20261029.py::TestSweep177CommissionCurrency (red at base: 90 != 333000)"
+  },
+  {
+   "id": 180,
+   "file": "fours_customizations/checkin_handler.py",
+   "fix": "checkin_handler.py:200-202: _find_attendance loads the Attendance with for_update=True",
+   "commit": "7ff5858",
+   "test": "fours_customizations/tests/test_sweep_20261029.py::TestSweep180AttendanceLock (red at base)"
+  },
+  {
+   "id": 193,
+   "file": "fours_customizations/negative_stock_handler.py",
+   "fix": "negative_stock_handler.py:310 has_permission('Stock Reconciliation','create', throw=True); :349 insert without ignore_permissions",
+   "commit": "4fd078d",
+   "test": "fours_customizations/tests/test_sweep_20261029.py::TestSweep193ReconcileItemsPermission (2 red at base, 1 pin)"
+  },
+  {
+   "id": 195,
+   "file": "fours_customizations/sales_chain_integrity.py",
+   "fix": "get_broken_sales_chains reads notes with frappe.get_list (role + User Permissions), limit_page_length=0",
+   "commit": "f698cbb",
+   "test": "fours_customizations/tests/test_sweep_20261029.py::TestSweep195AuditScope (red at base)"
+  },
+  {
+   "id": 247,
+   "file": "fours_customizations/sales_chain_integrity.py",
+   "fix": "relink_delivery_note: dn.check_permission('write'), si.check_permission('read') before any write",
+   "commit": "256a711",
+   "test": "fours_customizations/tests/test_sweep_20261029.py::TestSweep247RelinkPermission (2 red at base, 1 pin)"
+  },
+  {
+   "id": 253,
+   "file": "fours_customizations/sales_chain_integrity.py",
+   "fix": "submitted_delivery_notes_for_invoice looks across invoice_amendment_chain",
+   "commit": "b5d6982",
+   "test": "fours_customizations/tests/test_sweep_20261029.py::TestSweep253AmendedInvoiceGuard (red at base)"
+  },
+  {
+   "id": 261,
+   "file": "fours_customizations/sales_order_handler.py",
+   "fix": "_get_customer_outstanding sums debit/credit_in_account_currency (HAVING follows)",
+   "commit": "d0b7226",
+   "test": "fours_customizations/tests/test_sweep_20261029.py::TestSweep261OutstandingCurrency (real SQL on SQLite; red at base: 370000 != 100)"
+  }
+ ],
+ "minors_left": [
+  {
+   "id": 167,
+   "note": "quick_price/api.py not changed by this sweep; left."
+  },
+  {
+   "id": 168,
+   "note": "quick_price_change.py not changed; left."
+  },
+  {
+   "id": 170,
+   "note": "quick_price/api.py not changed; left."
+  },
+  {
+   "id": 171,
+   "note": "accounting_correction.py not changed; left."
+  },
+  {
+   "id": 175,
+   "note": "customer_balance.py not changed; left."
+  },
+  {
+   "id": 179,
+   "note": "customer_balance.py not changed; left."
+  },
+  {
+   "id": 181,
+   "note": "checkin_handler.py changed, but not trivial: needs a synthetic-arrival marker and replacing/relinking the SYSTEM-AUTO checkin; left."
+  },
+  {
+   "id": 187,
+   "note": "price_adjustment.py not changed; left."
+  },
+  {
+   "id": 188,
+   "note": "price_adjustment.py not changed; left."
+  },
+  {
+   "id": 189,
+   "note": "price_adjustment.py not changed; left."
+  },
+  {
+   "id": 190,
+   "note": "price_adjustment.py not changed; left."
+  },
+  {
+   "id": 191,
+   "note": "price_adjustment.py not changed; left."
+  },
+  {
+   "id": 194,
+   "note": "items_pending_reconciliation report not changed; left."
+  },
+  {
+   "id": 201,
+   "note": "salary_slip_handler.py not changed; left (needs a carry-forward policy)."
+  },
+  {
+   "id": 210,
+   "note": "negative_stock_handler.py changed, but not trivial: changes FC-1's pinned mark_reconciled semantics (U20 tests) and needs a decision on restoring the pre-automation flag; left."
+  },
+  {
+   "id": 211,
+   "note": "overtime_utils.py not changed; left."
+  },
+  {
+   "id": 212,
+   "note": "overtime_utils.py not changed; left."
+  },
+  {
+   "id": 215,
+   "note": "payroll_handler.py not changed; left."
+  },
+  {
+   "id": 216,
+   "note": "payroll_handler.py not changed; left."
+  },
+  {
+   "id": 222,
+   "note": "price_adjustment.py not changed; left."
+  },
+  {
+   "id": 225,
+   "note": "price_adjustment.py not changed; left."
+  },
+  {
+   "id": 235,
+   "note": "reset_commissions.py not changed; left."
+  },
+  {
+   "id": 238,
+   "note": "salary_slip_handler.py not changed; left."
+  },
+  {
+   "id": 254,
+   "note": "sales_chain_integrity.py changed, but not trivial: needs a policy (refuse cancel vs re-issue credit) for consumed price corrections; left."
+  },
+  {
+   "id": 255,
+   "note": "sales_chain_integrity.py changed, but not trivial: row matching by idx/qty with ambiguity errors; left."
+  },
+  {
+   "id": 256,
+   "note": "sales_chain_integrity.py changed; one-line gate on enable_selling_automations, but it opens manual goods credit notes for Vox (tills' returns path), a policy decision for the lead; left."
+  },
+  {
+   "id": 259,
+   "note": "sales_order_handler.py changed, but not trivial: change posting needs a separate Pay PE/JE; left."
+  }
+ ],
+ "tests": {
+  "new_module": "fours_customizations/tests/test_sweep_20261029.py (stub frappe: in-memory tables, permission policy, SQLite for raw SQL; 40 tests, all green at HEAD; run against the a75b333 production files 33 fail/error and the 7 passing are regression pins)",
+  "bench_test_added": "fours_customizations/tests/test_price_lists.py::test_landed_cost_carton_price (bench only)",
+  "full_run": "python3 -m unittest discover -s fours_customizations/tests -t .: base 106 tests errors=71, HEAD 146 tests errors=71, identical failing set (diffed). Pre-existing: 19 modules need a bench (No module named 'frappe'); test_vox_pilot_correction / test_vox_pilot_credit need a sibling kit_pos checkout (../kit_pos/kit_pos/connector/auto_held_lines.py).",
+  "stub_run_of_bench_only_write_free_tests": "test_vox_negative_stock_guard + test_kit_bom_supersede (30 tests) under stub frappe: OK at base and at HEAD",
+  "compileall": "python3 -m compileall -q fours_customizations: clean",
+  "evidence_dir": "/opt/build/ent-fours-wt/sweep-20261029-evidence (per-finding red/green runs, final-module-at-base.txt, full-base/full-head runs)"
+ },
+ "release_notes": {
+  "users": [
+   "Landed Cost Voucher New Selling Price now also re-prices carton/box Item Prices at price x conversion factor (was: set to the unit price); a box price in a UOM the item has no conversion for is left untouched; a newly created price carries the stock UOM.",
+   "Request Cancellation fast track (draft Delivery Note): only a requester who can read the invoice (role + company) gets the automatic cancel; others go through the normal request flow.",
+   "Draft Delivery Note deletion (and therefore the fast-track auto-cancel, which deletes the draft note) no longer cancels the Sales Order's Payment Entries: the money stays on the customer's account as an advance, as the message already said. A Sales Order cancelled from the desk still cancels its receipts.",
+   "Device check-in endpoint (add_checkin) now requires Employee Checkin create permission and respects Employee/Company User Permissions.",
+   "Commission: supplier refunds and other non-Customer Payment Entries no longer count, and no longer require a Sales Person; Payment Entry amounts are counted in company currency.",
+   "An invoice whose goods were only partly returned can no longer be cancelled (directly or by deleting another draft DN) until every unit is back; the guard also follows invoice amendments.",
+   "DN Returns: the uplift credit note for a price corrected upwards now carries the Sales Person (it was rejected before); returns of delivery-first notes now raise their credit note; rows no invoice can be found for are reported (alert + Error Log).",
+   "Changing or clearing an employee's default shift ends the running Shift Assignment the day before instead of cancelling it, so attendance deductions for earlier days stay.",
+   "Negative-stock automation counts pack lines in stock units and sums rows of one item, so carton sales no longer fail with Insufficient Stock where the automation should have armed.",
+   "Reconcile All needs Stock Reconciliation create permission; the broken-chain audit and the relink repair respect the caller's permissions; the outstanding-debt notice shows foreign-currency receivables in their own currency."
+  ],
+  "connector_routes": "No kit_pos connector route, response shape or status code is changed; no connector file is touched. The only change on the tills' path is server-side: negative_stock_handler.ensure_negative_stock_for_doc (Sales Invoice before_submit during materialization) now arms for pack lines, i.e. fewer NegativeStockError refusals. The sales-chain cancel guards (#182/#253) only bite where Delivery Notes exist (not on update_stock POS invoices)."
+ },
+ "migrate": "none: no DocType schema change, no Custom Field, no fixture, no patch. Only core fields are read (stock_qty, conversion_factor, base_paid_amount, dn_detail, *_in_account_currency, Item Price.uom, Shift Assignment.end_date); safe on ddamu's un-migrated schema.",
+ "risks": [
+  "#174: if the biometric sync token's user lacks Employee Checkin create (or is fenced by a Company User Permission), device punches will 403 and pile up in the PHP retry queue until the role is fixed: verify before deploy. Users with the hrms Employee role can still create their own punches (as upstream hrms).",
+  "#258 also changes the draft-DN fast-track auto-cancel: the SO's Receive Payment Entries now stay as customer advances (base cancelled them via the SO on_cancel). Intended per the delivery_note_handler design; the refund, if any, is a separate step.",
+  "#180: Attendance row lock adds a lock to the after_insert path; Kit Attend locks Employee first, the fours endpoint takes only the Attendance lock, so no lock cycle is expected, but the lab should run a concurrent punch burst.",
+  "#186: saving end_date on a submitted Shift Assignment runs HRMS on_update_after_submit; assignments HRMS refuses to update are logged and left (as cancel failures were).",
+  "#182/#253 make cancellation stricter: some cancels that passed before (partial returns, amendments) are now refused with the existing 'Delivery Note still submitted' message.",
+  "All tests here are stub-frappe unit tests; real hooks, ERPNext validation and permissions need the lab rehearsal listed per finding."
+ ],
+ "open_questions": [
+  "#173: should the fast track also require a configured auto-cancel / 'may request fast-track' role (the verifier's stronger option)? Implemented only the read (company-scoped) check to keep the feature's audience.",
+  "#183: should the DN-return credit flow become atomic (build/validate the uplift note before submitting the base credit, re-raise instead of swallowing in on_submit)? Left as is: re-raising would block the store keeper's return submit.",
+  "#165: should landed cost skip customer-specific / batch / validity-window Item Prices? Unchanged here.",
+  "#174: rotate the API token hard-coded in biometric-sync-src SendBiometricLogsToERP.php (verifier note; outside this repo).",
+  "#256 (minor, left): should the store-only goods-return guard be limited to companies with enable_selling_automations?"
+ ]
+}
