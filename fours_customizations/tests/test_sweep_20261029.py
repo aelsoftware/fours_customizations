@@ -443,3 +443,43 @@ class TestSweep165LandedCostUom(SweepCase):
 		self.assertEqual(self.mod._sync_item_price("X", 1100, "Standard Selling"), 1)
 		(created,) = self.site.rows("Item Price")
 		self.assertEqual((created.uom, created.price_list_rate), ("Nos", 1100))
+
+
+class TestSweep173AutoCancelAuthz(SweepCase):
+	"""#173: the draft-delivery fast track cancels only invoices the requester may read (company User Permissions)."""
+
+	def setUp(self):
+		super().setUp()
+		utils = stub(
+			"cancellation_requests.utils",
+			build_document_link=lambda *a: "", create_notification_log=lambda *a, **k: None,
+			get_doctype_config=lambda doctype: {"enabled": 1}, get_settings=lambda: None,
+			post_to_slack_webhook=lambda *a: None, resolve_cancellation_recipients=lambda *a, **k: [],
+			send_slack_dm=lambda *a: None,
+		)
+		chain = stub(
+			"fours_customizations.sales_chain_integrity",
+			VOX_NANSANA_PAID_CANCEL_FLAG="flag", can_auto_cancel_nansana_embedded_payment=lambda *a, **k: False,
+		)
+		self.mod = self.load(
+			"cancellation_override.py",
+			{"cancellation_requests": stub("cancellation_requests"), "cancellation_requests.utils": utils,
+			 "fours_customizations.sales_chain_integrity": chain},
+		)
+		self.site.add("Sales Invoice", name="SI-4S-1", company="4S Industries Limited", docstatus=1, is_return=0, items=[])
+		self.site.add("Delivery Note Item", parent="DN-1", against_sales_invoice="SI-4S-1")
+		self.site.add("Delivery Note", name="DN-1", is_return=0, docstatus=0)
+		self.perform = self.enterContext(patch.object(self.mod, "_perform_auto_cancellation"))
+		self.enterContext(patch.object(self.mod, "_notify"))
+
+	def test_requester_without_read_on_invoice_is_deferred(self):
+		self.site.permit = lambda doctype, ptype, doc, user: not (doctype == "Sales Invoice" and doc is not None)
+		self.assertIsNone(self.mod._try_auto_cancel_invoice("SI-4S-1", "wrong customer"))
+		self.perform.assert_not_called()
+
+	def test_requester_with_read_is_fast_tracked(self):
+		seen = []
+		self.site.permit = lambda doctype, ptype, doc, user: seen.append((doctype, ptype, getattr(doc, "name", None))) or True
+		self.assertIn("automatically cancelled", self.mod._try_auto_cancel_invoice("SI-4S-1", "wrong customer")["message"])
+		self.perform.assert_called_once()
+		self.assertIn(("Sales Invoice", "read", "SI-4S-1"), seen)

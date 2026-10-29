@@ -125,6 +125,12 @@ def _try_auto_cancel_invoice(name, reason):
 
     si = frappe.get_doc(INVOICE_DOCTYPE, name)
 
+    # The fast track cancels with elevated rights, so it is only for a requester
+    # who may see this invoice (role and company User Permissions); anyone else
+    # gets the ordinary request flow.
+    if not frappe.has_permission(INVOICE_DOCTYPE, ptype="read", doc=si):
+        return None
+
     # Only submitted, forward (non-return) invoices are eligible.
     if si.docstatus != 1 or si.get("is_return"):
         return None
