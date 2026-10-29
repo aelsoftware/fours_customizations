@@ -91,8 +91,8 @@ def get_sales_person_summary(sales_person: str, start, end, company: str | None 
 
 	pe_row = frappe.db.sql(
 		"SELECT "
-		"COALESCE(SUM(CASE WHEN pe.payment_type = 'Receive' THEN pe.paid_amount ELSE 0 END), 0), "
-		"COALESCE(SUM(CASE WHEN pe.payment_type = 'Pay' THEN pe.paid_amount ELSE 0 END), 0) "
+		"COALESCE(SUM(CASE WHEN pe.payment_type = 'Receive' THEN pe.base_paid_amount ELSE 0 END), 0), "
+		"COALESCE(SUM(CASE WHEN pe.payment_type = 'Pay' THEN pe.base_paid_amount ELSE 0 END), 0) "
 		f"FROM `tabPayment Entry` pe WHERE {' AND '.join(pe_conditions)}",
 		pe_params,
 	)[0]

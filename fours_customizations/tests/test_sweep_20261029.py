@@ -597,3 +597,12 @@ class TestSweep178SupplierRefundCommission(CommissionCase):
 			handler.validate(SimpleNamespace(company="4S", payment_type="Receive", party_type="Customer", sales_person=None))
 		with self.assertRaises(ValidationError):
 			handler.validate(SimpleNamespace(company="4S", payment_type="Pay", party_type="Customer", sales_person=None))
+
+
+class TestSweep177CommissionCurrency(CommissionCase):
+	"""#177 (minor): Payment Entry amounts are summed in company currency, like the POS and sales aggregates."""
+
+	def test_foreign_currency_receipt_in_company_currency(self):
+		self.pe("PE-USD", "Receive", "Customer", 100, base=370_000)
+		self.pe("PE-USD-REFUND", "Pay", "Customer", 10, base=37_000)
+		self.assertEqual(self.summary()["payment_entry_payments"], 333_000)
