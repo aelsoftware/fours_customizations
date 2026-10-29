@@ -34,8 +34,12 @@ def validate(doc, method=None):
 	if not required_company or doc.company != required_company:
 		return
 
+	# Only Customer money drives commission: a supplier refund or an employee
+	# repayment coming in needs no Sales Person.
+	if doc.party_type != "Customer":
+		return
 	is_receive = doc.payment_type == "Receive"
-	is_customer_refund = doc.payment_type == "Pay" and doc.party_type == "Customer"
+	is_customer_refund = doc.payment_type == "Pay"
 	if not (is_receive or is_customer_refund):
 		return
 

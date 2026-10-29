@@ -81,7 +81,8 @@ def get_sales_person_summary(sales_person: str, start, end, company: str | None 
 		"pe.docstatus = 1",
 		"pe.sales_person = %(sp)s",
 		"pe.posting_date BETWEEN %(start)s AND %(end)s",
-		"(pe.payment_type = 'Receive' OR (pe.payment_type = 'Pay' AND pe.party_type = 'Customer'))",
+		"pe.party_type = 'Customer'",
+		"pe.payment_type IN ('Receive', 'Pay')",
 	]
 	pe_params: dict = {"sp": sales_person, "start": start_d, "end": end_d}
 	if company:

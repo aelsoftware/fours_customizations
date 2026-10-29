@@ -534,3 +534,66 @@ class TestSweep180AttendanceLock(SweepCase):
 		self.site.add("Attendance", name="ATT-1", employee="E1", attendance_date=date(2026, 10, 28), docstatus=1)
 		self.assertEqual(mod._find_attendance("E1", date(2026, 10, 28), None).name, "ATT-1")
 		self.assertIn(("get_doc", "Attendance", "ATT-1", True), self.site.log)
+
+
+def erpnext_stubs():
+	return {
+		"erpnext": stub("erpnext"),
+		"erpnext.accounts": stub("erpnext.accounts"),
+		"erpnext.accounts.doctype": stub("erpnext.accounts.doctype"),
+		"erpnext.accounts.doctype.payment_entry": stub("erpnext.accounts.doctype.payment_entry"),
+		"erpnext.accounts.doctype.payment_entry.payment_entry": stub(
+			"erpnext.accounts.doctype.payment_entry.payment_entry", get_reference_details=MagicMock()
+		),
+		"erpnext.accounts.party": stub("erpnext.accounts.party", get_party_account=MagicMock()),
+		"erpnext.accounts.utils": stub("erpnext.accounts.utils", get_outstanding_invoices=MagicMock()),
+	}
+
+
+class CommissionCase(SweepCase):
+	def setUp(self):
+		super().setUp()
+		self.mod = self.load("commission_handler.py")
+		self.site.add("Sales Person", name="SP-1", commission_rate=5)
+		self.db = self.sqlite(
+			"CREATE TABLE `tabPayment Entry` (name TEXT, docstatus INT, sales_person TEXT, posting_date TEXT,"
+			" payment_type TEXT, party_type TEXT, company TEXT, paid_amount REAL, base_paid_amount REAL)",
+			"CREATE TABLE `tabSales Invoice` (name TEXT, docstatus INT, is_return INT, is_pos INT, custom_sales_person TEXT,"
+			" posting_date TEXT, company TEXT, base_grand_total REAL, base_paid_amount REAL, base_change_amount REAL,"
+			" return_against TEXT)",
+		)
+
+	def pe(self, name, payment_type, party_type, amount, base=None):
+		self.db.execute(
+			"INSERT INTO `tabPayment Entry` VALUES (?, 1, 'SP-1', '2026-10-15', ?, ?, '4S', ?, ?)",
+			(name, payment_type, party_type, amount, amount if base is None else base),
+		)
+
+	def summary(self):
+		return self.mod.get_sales_person_summary("SP-1", "2026-10-01", "2026-10-31", "4S")
+
+
+class TestSweep178SupplierRefundCommission(CommissionCase):
+	"""#178: only Customer-facing Payment Entries count; a supplier refund (Receive from a Supplier) earns nothing."""
+
+	def test_supplier_receive_does_not_count(self):
+		self.pe("PE-CUST", "Receive", "Customer", 100_000)
+		self.pe("PE-SUPP-REFUND", "Receive", "Supplier", 1_000_000)
+		self.pe("PE-CUST-REFUND", "Pay", "Customer", 10_000)
+		self.pe("PE-SUPP-PAY", "Pay", "Supplier", 50_000)
+		self.pe("PE-EMP", "Receive", "Employee", 20_000)
+		summary = self.summary()
+		self.assertEqual(summary["payment_entry_payments"], 90_000)
+		self.assertEqual(summary["total_commission"], 4_500)
+
+	def test_supplier_refund_needs_no_sales_person(self):
+		settings = stub(
+			SETTINGS_MODULE,
+			get_settings=lambda: _dict(enforce_sales_person_on_payment=1, default_company="4S"),
+		)
+		handler = self.load("payment_entry_handler.py", {**erpnext_stubs(), SETTINGS_MODULE: settings})
+		handler.validate(SimpleNamespace(company="4S", payment_type="Receive", party_type="Supplier", sales_person=None))
+		with self.assertRaises(ValidationError):
+			handler.validate(SimpleNamespace(company="4S", payment_type="Receive", party_type="Customer", sales_person=None))
+		with self.assertRaises(ValidationError):
+			handler.validate(SimpleNamespace(company="4S", payment_type="Pay", party_type="Customer", sales_person=None))
